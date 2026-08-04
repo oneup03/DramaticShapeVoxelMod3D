@@ -74,7 +74,12 @@ local SHADER = [[
 ]]
 
 local shader = nil            -- nil = untried, false = unavailable
-local ping, pong, cw, ch = nil, nil, 0, 0
+-- One ping/pong pair per SLOT. Keyed rather than singular because a stereo
+-- frame blurs two canvases of the same size in the same breath, and a single
+-- pair would hand the second eye the first eye's own working canvas -- which
+-- is not a subtle failure, it is one eye blurred twice and the other not at
+-- all, in a pair that then has nothing left to fuse.
+local pairs_ = {}
 
 local function getShader()
   if shader == nil then
@@ -84,8 +89,10 @@ local function getShader()
   return shader or nil
 end
 
-local function getCanvases(w, h)
-  if not ping or cw ~= w or ch ~= h then
+local function getCanvases(w, h, slot)
+  slot = slot or "world"
+  local p = pairs_[slot]
+  if not (p and p.w == w and p.h == h) then
     local PixelCanvas = V.require("PixelCanvas")
     local ok, a = PixelCanvas.new(w, h)
     if not ok then return nil end
@@ -94,9 +101,14 @@ local function getCanvases(w, h)
     -- the gaussian's fractional tap offsets need linear filtering
     a:setFilter("linear", "linear")
     b:setFilter("linear", "linear")
-    ping, pong, cw, ch = a, b, w, h
+    if p then
+      if p.a and p.a.release then pcall(p.a.release, p.a) end
+      if p.b and p.b.release then pcall(p.b.release, p.b) end
+    end
+    p = { a = a, b = b, w = w, h = h }
+    pairs_[slot] = p
   end
-  return ping, pong
+  return p.a, p.b
 end
 
 function TiltShift.setLevel(level)
@@ -128,13 +140,30 @@ end
 -- Run the effect over `canvas` and return the processed canvas. Returns
 -- the input unchanged when the effect is off or cannot run (headless, no
 -- shader support), so the caller composites exactly what it was handed.
+--
+-- The ENGINE'S entry point, and it stands aside while 3D is on. The stage
+-- it is registered as runs on the one canvas drawWorld handed back, which
+-- in 3D is one eye of two -- blur that and the pair has a sharp half and a
+-- soft half and will not fuse at all. Stereo3D calls force() per eye
+-- instead, which is the same pass with the slot said out loud. Done this
+-- way round rather than by ordering the two pipelines because the order
+-- they run in is the engine's business and not something to depend on.
 function TiltShift.apply(canvas)
+  local ok, owned = pcall(function()
+    return V.require("Stereo3D").ownsBlur()
+  end)
+  if ok and owned then return canvas end
+  return TiltShift.force(canvas, "world")
+end
+
+-- The pass itself, with the slot said out loud and no deferral to anyone.
+function TiltShift.force(canvas, slot)
   local preset = TiltShift.PRESETS[TiltShift.level]
   if not (preset and canvas) then return canvas end
   local sh = getShader()
   if not sh then return canvas end
   local w, h = canvas:getDimensions()
-  local a, b = getCanvases(w, h)
+  local a, b = getCanvases(w, h, slot)
   if not a then return canvas end
 
   local spacing = math.max(0.75, math.min(3, h * preset.spacing))
@@ -173,7 +202,11 @@ end
 
 -- Drop the GPU objects (window resize, hot reload).
 function TiltShift.invalidate()
-  ping, pong, cw, ch = nil, nil, 0, 0
+  for slot, p in pairs(pairs_) do
+    if p.a and p.a.release then pcall(p.a.release, p.a) end
+    if p.b and p.b.release then pcall(p.b.release, p.b) end
+    pairs_[slot] = nil
+  end
 end
 
 return TiltShift

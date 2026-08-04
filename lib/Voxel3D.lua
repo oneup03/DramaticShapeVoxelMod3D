@@ -425,11 +425,12 @@ end
 -- { eye = {x,y,z}, focus = {x,y,z}, fov = radians, curve = k or nil,
 --   up = {x,y,z} or nil }.
 --
--- A caller with matrices of its own -- the VR eyes, whose view comes from
--- a tracked pose and whose projection is an off-centre frustum no
--- eye/focus/fov triple can express -- sets `view` and `proj` instead, and
--- the eye/focus fields stay for everything that reasons about the camera
--- rather than projecting with it (setLook, the sky, the water's lean).
+-- A caller with matrices of its own -- a stereo eye, whose view is the mono
+-- camera slid along its own right and whose projection is an off-centre
+-- frustum no eye/focus/fov triple can express -- sets `view` and `proj`
+-- instead, and the eye/focus fields stay for everything that reasons about
+-- the camera rather than projecting with it (setLook, the sky, the water's
+-- lean). Such a caller may also set `eyeCenter` and `skyRay`.
 --
 -- The orbit is the free-roam camera and it is described entirely by ONE
 -- number, the pitch, because that is all a camera following the player over
@@ -447,10 +448,24 @@ Voxel3D.camera = nil
 
 -- This frame's camera RAY FAN, set by viewProjection alongside vp: the
 -- world direction a canvas point looks along (see Sky.paint's `ray`).
--- Present for every free-pitch camera -- the VR eyes bring theirs
--- (VRRig.eyeCamera), a placed eye/focus camera gets one built -- and nil
+-- Present for every free-pitch camera -- a stereo eye brings its own
+-- (StereoRig.pair), a placed eye/focus camera gets one built -- and nil
 -- for the orbit, whose frame-hung sky is the classic look.
 Voxel3D.skyRayLive = nil
+
+-- The MONO eye -- the point midway between a stereo pair, and simply the eye
+-- itself for every other camera.
+--
+-- Voxel3D.eye is per eye and has to be: specular, the glass glint and the
+-- water's reflections are all functions of where the viewer actually stands,
+-- and two eyes that agreed about a highlight would be showing the same
+-- reflection from two different places. This one exists for the opposite
+-- question -- "which way does this card face" -- where agreement is the
+-- whole point. FirstPerson.frameFor picks one of FOUR quantised sprite
+-- frames off atan2(eye - card); two eyes straddling a quantisation boundary
+-- would show the front sprite to one and the side sprite to the other, which
+-- is retinal rivalry rather than depth. So billboards yaw at this.
+Voxel3D.eyeCenter = nil
 
 -- ------- which way, and how steeply, this camera looks
 --
@@ -487,101 +502,146 @@ local function setLook(eye, focus)
   Voxel3D.lookFlat = { dx / flat, 0, dz / flat }
 end
 
--- View and projection for a `vw` x `vh` world-pixel view centred on
--- (cx, cy) in world pixels. Returns the combined matrix.
-function Voxel3D.viewProjection(cx, cy, vw, vh)
+-- ------- the camera as a DESCRIPTION, before it is a pair of matrices
+--
+-- Everything this frame's camera IS, in world pixels: the six numbers a
+-- perspective and a look-at are built from, plus the two the rest of the
+-- pass reads off it. Two cameras answer -- the placed one (the first-person
+-- rig, the battle's over-the-shoulder shot) and the orbit -- and they differ
+-- only in where the numbers come from, which is why they can share the tail
+-- below rather than each build a projection of their own.
+--
+-- nil for a caller that brought raw matrices. Nothing here can decompose
+-- those, and pretending otherwise would answer with a camera that is not the
+-- one being drawn.
+--
+-- This exists because STEREO needs the description rather than the matrices:
+-- an eye is the mono camera slid sideways and sheared, and both of those are
+-- operations on eye/right/tangents, not on a finished view-projection. See
+-- StereoRig, which takes exactly this record and hands back two cameras that
+-- go back in through the raw-matrix branch.
+function Voxel3D.monoCamera(cx, cy, vw, vh)
   local cam = Voxel3D.camera
   if cam then
+    if cam.view and cam.proj then return nil end
     local eye, focus = cam.eye, cam.focus
-    Voxel3D.eye = eye
-    -- kept beside the eye for horizonY: where the sky's pale end goes is a
-    -- question about which way this camera looks, and only these two answer it
-    Voxel3D.focus = focus
-    setLook(eye, focus)
-    -- a camera that brought its own matrices (a VR eye) projects with
-    -- them; only the clip-space Y flip is added, for the same canvas
-    -- reason as every other branch here
-    if cam.view and cam.proj then
-      Voxel3D.fovY = cam.fov
-      -- the VR eyes bring their fan with them (VRRig.eyeCamera)
-      Voxel3D.skyRayLive = cam.skyRay
-      return Mat4.mul(Mat4.mul(Mat4.scale(1, -1, 1), cam.proj), cam.view)
-    end
     local dx = eye[1] - focus[1]
     local dy = eye[2] - focus[2]
     local dz = eye[3] - focus[3]
     local dist = math.max(1, math.sqrt(dx * dx + dy * dy + dz * dz))
-    -- kept for the passes that measure an ANGLE against this camera rather
-    -- than a position: the water's reflected sun is sized in radians, and
-    -- radians per canvas pixel is exactly this over the frame height
-    Voxel3D.fovY = cam.fov
-    local proj = Mat4.perspective(cam.fov, vw / vh,
-                                  math.max(1, dist * 0.05), dist * 4 + 4096)
-    -- the same clip-space Y flip the orbit needs, for the same reason: we
-    -- bypass LOVE's transform_projection and canvas coordinates run Y down
-    proj = Mat4.mul(Mat4.scale(1, -1, 1), proj)
-    -- The camera's RAY FAN, for the sky's skybox path (Sky.paint's `ray`):
-    -- a placed camera with a FREE PITCH -- the first-person rig, steered
-    -- by a mouse on the flat screen -- must not hang its gradient off the
-    -- frame, or looking up and down drags the bands with the view. Built
-    -- from the very basis the view below is: forward, the true right, the
-    -- true up, and the symmetric frustum's tangents.
-    local upv = cam.up or { 0, 1, 0 }
-    local fx, fy, fz = -dx / dist, -dy / dist, -dz / dist
-    local crx = fy * upv[3] - fz * upv[2]
-    local cry = fz * upv[1] - fx * upv[3]
-    local crz = fx * upv[2] - fy * upv[1]
-    local crl = math.sqrt(crx * crx + cry * cry + crz * crz)
-    if crl > 1e-6 then
-      crx, cry, crz = crx / crl, cry / crl, crz / crl
-      local cux = cry * fz - crz * fy
-      local cuy = crz * fx - crx * fz
-      local cuz = crx * fy - cry * fx
-      local tanY = math.tan(cam.fov / 2)
-      local tanX = tanY * (vw / vh)
-      Voxel3D.skyRayLive = {
-        base = { fx - crx * tanX + cux * tanY,
-                 fy - cry * tanX + cuy * tanY,
-                 fz - crz * tanX + cuz * tanY },
-        du = { crx * 2 * tanX, cry * 2 * tanX, crz * 2 * tanX },
-        dv = { cux * -2 * tanY, cuy * -2 * tanY, cuz * -2 * tanY },
-      }
-    else
-      Voxel3D.skyRayLive = nil
-    end
-    -- world up by default, so the horizon stays level -- a placed camera
-    -- that rolled with its own pitch would tip the whole arena. A caller
-    -- may hand its own up: the first-person BLEND does, because its far
-    -- end is the orbit, whose up leans with the pitch -- world up at the
-    -- orbit's steep end degenerates against a straight-down view.
-    return Mat4.mul(proj, Mat4.lookAt(eye, focus, cam.up or { 0, 1, 0 }))
+    return {
+      eye = eye, focus = focus,
+      -- world up by default, so the horizon stays level -- a placed camera
+      -- that rolled with its own pitch would tip the whole arena. A caller
+      -- may hand its own up: the first-person BLEND does, because its far
+      -- end is the orbit, whose up leans with the pitch -- world up at the
+      -- orbit's steep end degenerates against a straight-down view.
+      up = cam.up or { 0, 1, 0 },
+      fov = cam.fov, dist = dist,
+      near = math.max(1, dist * 0.05), far = dist * 4 + 4096,
+      curve = cam.curve,
+      -- a FREE PITCH wants a real skybox; see the fan below
+      fan = true,
+    }
   end
-
-  -- the orbit: a fixed pitch per rung, and the classic frame-hung sky --
-  -- no ray fan wanted
-  Voxel3D.skyRayLive = nil
 
   local a = Voxel.angle
   local focal = Voxel.FOCAL
   local dist = focal * vh
-  -- the FOV that makes a straight-down camera at `dist` frame exactly `vh`
-  -- world pixels, which is the framing the flat view already has
-  local fov = 2 * math.atan(1 / (2 * focal))
-  Voxel3D.fovY = fov
+  return {
+    focus = { cx, 0, cy },
+    eye = { cx, dist * math.cos(a), cy + dist * math.sin(a) },
+    -- perpendicular to the view direction in the YZ plane: north is screen-up
+    -- when looking straight down, +Y is screen-up when looking level. Never
+    -- parallel to the view direction, so there is no degenerate a = 0 case.
+    up = { 0, math.sin(a), -math.cos(a) },
+    -- the FOV that makes a straight-down camera at `dist` frame exactly `vh`
+    -- world pixels, which is the framing the flat view already has
+    fov = 2 * math.atan(1 / (2 * focal)),
+    dist = dist,
+    near = math.max(1, dist * 0.05), far = dist * 4 + 4096,
+    curve = nil,
+    -- the orbit's sky is frame-hung, which is the classic look
+    fan = false,
+  }
+end
 
-  local focus = { cx, 0, cy }
-  local eye = { cx, dist * math.cos(a), cy + dist * math.sin(a) }
+-- The RAY FAN of a symmetric frustum: the world direction a canvas point
+-- (u, v in 0..1, left-to-right and top-to-bottom) looks along is
+-- base + u * du + v * dv.
+--
+-- A placed camera with a FREE PITCH -- the first-person rig, steered by a
+-- mouse -- must not hang its gradient off the frame, or looking up and down
+-- drags the bands with the view. Built from the very basis the view is:
+-- forward, the true right, the true up, and the frustum's own tangents.
+--
+-- nil where the up vector is parallel to the view direction and there is no
+-- basis to build one from.
+function Voxel3D.symmetricFan(mono, vw, vh)
+  local eye, focus, upv = mono.eye, mono.focus, mono.up
+  local dx, dy, dz = eye[1] - focus[1], eye[2] - focus[2], eye[3] - focus[3]
+  local dist = math.max(1e-6, math.sqrt(dx * dx + dy * dy + dz * dz))
+  local fx, fy, fz = -dx / dist, -dy / dist, -dz / dist
+  local crx = fy * upv[3] - fz * upv[2]
+  local cry = fz * upv[1] - fx * upv[3]
+  local crz = fx * upv[2] - fy * upv[1]
+  local crl = math.sqrt(crx * crx + cry * cry + crz * crz)
+  if not (crl > 1e-6) then return nil end
+  crx, cry, crz = crx / crl, cry / crl, crz / crl
+  local cux = cry * fz - crz * fy
+  local cuy = crz * fx - crx * fz
+  local cuz = crx * fy - cry * fx
+  local tanY = math.tan(mono.fov / 2)
+  local tanX = tanY * (vw / vh)
+  return {
+    base = { fx - crx * tanX + cux * tanY,
+             fy - cry * tanX + cuy * tanY,
+             fz - crz * tanX + cuz * tanY },
+    du = { crx * 2 * tanX, cry * 2 * tanX, crz * 2 * tanX },
+    dv = { cux * -2 * tanY, cuy * -2 * tanY, cuz * -2 * tanY },
+  }
+end
+
+-- View and projection for a `vw` x `vh` world-pixel view centred on
+-- (cx, cy) in world pixels. Returns the combined matrix.
+function Voxel3D.viewProjection(cx, cy, vw, vh)
+  local cam = Voxel3D.camera
+
+  -- A camera that brought its own matrices -- a stereo eye, whose view is
+  -- the mono one slid sideways and whose projection is an off-centre frustum
+  -- no eye/focus/fov triple can express -- projects with them; only the
+  -- clip-space Y flip is added, for the same canvas reason as the branch
+  -- below. The eye/focus fields stay for everything that reasons about the
+  -- camera rather than projecting with it.
+  if cam and cam.view and cam.proj then
+    Voxel3D.eye = cam.eye
+    -- kept beside the eye for horizonY: where the sky's pale end goes is a
+    -- question about which way this camera looks, and only these two answer it
+    Voxel3D.focus = cam.focus
+    -- a pair of eyes agrees about which way a card faces even where it
+    -- disagrees about where the card is; see Voxel3D.eyeCenter
+    Voxel3D.eyeCenter = cam.eyeCenter or cam.eye
+    setLook(cam.eye, cam.focus)
+    Voxel3D.fovY = cam.fov
+    -- the eyes bring their fan with them (StereoRig.pair)
+    Voxel3D.skyRayLive = cam.skyRay
+    return Mat4.mul(Mat4.mul(Mat4.scale(1, -1, 1), cam.proj), cam.view)
+  end
+
+  local mono = Voxel3D.monoCamera(cx, cy, vw, vh)
+  local eye, focus = mono.eye, mono.focus
   -- exposed for camera-facing billboards (VoxelScene yaws sprites at it)
   Voxel3D.eye = eye
   Voxel3D.focus = focus
+  Voxel3D.eyeCenter = eye
   setLook(eye, focus)
-  -- perpendicular to the view direction in the YZ plane: north is screen-up
-  -- when looking straight down, +Y is screen-up when looking level. Never
-  -- parallel to the view direction, so there is no degenerate a = 0 case.
-  local up = { 0, math.sin(a), -math.cos(a) }
+  -- kept for the passes that measure an ANGLE against this camera rather
+  -- than a position: the water's reflected sun is sized in radians, and
+  -- radians per canvas pixel is exactly this over the frame height
+  Voxel3D.fovY = mono.fov
+  Voxel3D.skyRayLive = mono.fan and Voxel3D.symmetricFan(mono, vw, vh) or nil
 
-  local proj = Mat4.perspective(fov, vw / vh,
-                                math.max(1, dist * 0.05), dist * 4 + 4096)
+  local proj = Mat4.perspective(mono.fov, vw / vh, mono.near, mono.far)
   -- Flip clip-space Y. Mat4.perspective emits textbook GL clip space with
   -- +Y up, but we bypass LOVE's own transform_projection, and LOVE's canvas
   -- coordinates run Y DOWN -- so without this the entire scene composites
@@ -589,7 +649,7 @@ function Voxel3D.viewProjection(cx, cy, vw, vh)
   -- downward. Winding flips with it, which is free here because the pass
   -- draws with culling off.
   proj = Mat4.mul(Mat4.scale(1, -1, 1), proj)
-  return Mat4.mul(proj, Mat4.lookAt(eye, focus, up))
+  return Mat4.mul(proj, Mat4.lookAt(eye, focus, mono.up))
 end
 
 -- ------- the horizon
@@ -629,7 +689,7 @@ function Voxel3D.horizonY(h)
 end
 
 -- The horizon as a LINE rather than a row, for a camera that can ROLL --
--- a VR eye. A head tipped sideways tips the true horizon across the
+-- a rolled camera. A view tipped sideways tips the true horizon across the
 -- canvas, and a sky painted in flat rows then visibly hinges with the
 -- head. So: project the flat forward direction (a point ON the vanishing
 -- line) and the same direction nudged a hair of world-up (a point just
@@ -733,13 +793,13 @@ function Voxel3D.skyBody(w, h)
   }
 end
 
--- ------- the VR sky's world-anchored pieces
+-- ------- the anchored sky's world-fixed pieces
 --
--- Both exist because a headset showed the shortcuts: a gradient painted
+-- Both exist because a freely pitching camera showed up the shortcuts: a gradient painted
 -- off the frame moved with the head that carried the frame, and a
 -- screen-space disc re-snapped its cell grid with every head movement
 -- and held its face square to the canvas instead of to the world. The
--- gradient's fix rides the camera record itself (skyRay -- see VRRig and
+-- gradient's fix rides the camera record itself (skyRay -- see StereoRig and
 -- Sky's useRay path); the disc's is below.
 
 -- The sun or moon as a QUAD IN THE WORLD: the baked cell art
@@ -856,7 +916,7 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot)
   -- A FREE-PITCH camera's sky is ANCHORED IN SPACE, where the orbit's is
   -- glued to the frame. One discriminator: skyRayLive, set by
   -- viewProjection above for every camera whose pitch the player steers
-  -- -- the VR eyes and the flat first-person rig alike. With a fan, the
+  -- -- the stereo eyes and the first-person rig alike. With a fan, the
   -- gradient is a SKYBOX (every pixel takes its band, and its GBC
   -- checker, from its ray's true elevation -- no motion of the camera
   -- moves a band, only the clock recolours them) and the sun or moon
@@ -1359,7 +1419,7 @@ function Voxel3D.invalidate()
   end
   canvas, canvasW, canvasH = nil, 0, 0
   held = nil
-  -- the VR sky's disc mesh belongs to this context like the canvases do
+  -- the anchored sky's disc mesh belongs to this context like the canvases do
   if discMesh and discMesh.release then pcall(discMesh.release, discMesh) end
   discMesh = nil
   ShadowMap.invalidate()

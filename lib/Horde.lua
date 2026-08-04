@@ -24,12 +24,11 @@
 -- the walking is over and freezing the world under it is the point.
 --
 -- THE CODE IS READ OFF GAME BOY BUTTONS, not off keys. Every input device
--- the engine has -- keyboard, gamepad, raw joystick, the touch overlay,
--- and the VR controllers (lib/VR.driveControls feeds Input:overlayPressed
--- and the stick path) -- lands in src/core/Input as one of eight buttons.
--- One detector on that abstraction is therefore a detector on ALL of
--- them, which is why the code works on a headset with no keyboard in the
--- room. It reads Input.pressQueue from the `input.step` hook, the fixed
+-- the engine has -- keyboard, gamepad, raw joystick, the touch overlay --
+-- lands in src/core/Input as one of eight buttons. One detector on that
+-- abstraction is therefore a detector on ALL of them, which is why the
+-- code works on a machine with no keyboard in the room at all. It reads
+-- Input.pressQueue from the `input.step` hook, the fixed
 -- step's own boundary, so it sees every edge exactly once whatever the
 -- frame rate did.
 --
@@ -106,8 +105,8 @@ end
 
 -- Whether the mode owns the camera rung right now, which is the whole of
 -- what "locked to first person" means: main.lua's cycleVoxel refuses
--- while this is true, and that one function is what the 3 key, the pad's
--- SELECT and the VR stick click all call.
+-- while this is true, and that one function is what the 3 key and the
+-- pad's SELECT both call.
 function Horde.viewLocked()
   return Horde.active
 end
@@ -130,8 +129,7 @@ local function overworld(G)
 end
 
 -- The way out, on demand. START -- the pad's, the keyboard's ESCAPE, the
--- touch overlay's -- and the VR left stick click all ask this, and it
--- asks the player. Nothing here ends the mode; the prompt does that
+-- touch overlay's -- asks this, and it asks the player. Nothing here ends the mode; the prompt does that
 -- through Horde.finish if the answer is yes.
 --
 -- Refused while anything is already on top of the overworld, so the

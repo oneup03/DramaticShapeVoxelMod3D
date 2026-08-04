@@ -79,13 +79,14 @@ Sky.DITHER_START = 0.6
 Sky.SPAN = 0.23
 
 -- How much ELEVATION the gradient spans above the horizon, in radians, for
--- a caller that anchors the sky IN SPACE rather than to the frame (the VR
--- eyes -- see Voxel3D.beginScene). On the flat screen the bands run from
--- the top edge of the frame down to the horizon, which is right for a
--- camera whose pitch is the rung's: the frame IS the window on the sky.
--- A headset's frame is wherever the head points, so glueing the zenith
--- band to its top edge drags the whole gradient around with the head. An
--- anchored caller instead hangs the gradient over a fixed slice of sky --
+-- a caller that anchors the sky IN SPACE rather than to the frame -- any
+-- camera that brought a ray fan (see Voxel3D.beginScene). On the classic
+-- orbit the bands run from the top edge of the frame down to the horizon,
+-- which is right for a camera whose pitch is the rung's: the frame IS the
+-- window on the sky. A free-pitch camera's frame is wherever it points, so
+-- glueing the zenith band to its top edge drags the whole gradient around
+-- with the view. An anchored caller instead hangs the gradient over a
+-- fixed slice of sky --
 -- horizon to ELEV_SPAN up -- and hands paint() the canvas row that span's
 -- top lands on this frame (the `top` argument), so tilting the head slides
 -- the frame across a sky that stays put.
@@ -188,13 +189,13 @@ uniform float top;      // where the deepest band begins, in canvas pixels --
 uniform float cell;     // the diorama's pixel size, in canvas pixels
 uniform float start;    // where the checker begins inside a band
 uniform float axisX;    // the "toward the ground" direction on the canvas:
-uniform float axisY;    // (0,1) for a level camera; a rolled VR eye tips
-                        // it, and edge/top are distances along it
-uniform vec3 rayBase;   // the eye's ray fan (VRRig eyeCamera.skyRay): a
+uniform float axisY;    // (0,1) for a level camera; a rolled one tips it,
+                        // and edge/top are distances along it
+uniform vec3 rayBase;   // the camera's ray fan (StereoRig / Voxel3D): a
 uniform vec3 rayDu;     // canvas point at fractions (u, v) looks along
 uniform vec3 rayDv;     // base + u*du + v*dv, world axes -- so each pixel
                         // knows its TRUE elevation and the gradient is a
-                        // real skybox, untouched by any head motion
+                        // real skybox, untouched by where the view points
 uniform float raySpan;  // radians of elevation the gradient covers
 uniform vec2 invSize;   // 1/w, 1/h: canvas pixels to fractions
 uniform float useRay;   // 0 = the flat screen's frame-linear gradient
@@ -460,8 +461,8 @@ function Sky.discRadius(h, cell, body)
 end
 
 -- One disc's worth of cell art -- shared verbatim by the screen-space
--- painter below (the flat screen) and by the BAKE the VR eyes texture
--- their world-anchored quad with (Sky.discImage). `plot(dx, dy, c)` gets
+-- painter below (the frame-hung sky) and by the BAKE an anchored caller
+-- textures its world-anchored quad with (Sky.discImage). `plot(dx, dy, c)` gets
 -- every kept cell in disc-local cell coordinates and its 0..255 colour.
 local function discCells(r, moon, shades, twilight, plot)
   local core = shades[1]
@@ -510,12 +511,12 @@ local function paintDisc(body, edge, cell, w, h)
   g.setColor(1, 1, 1, 1)
 end
 
--- ------- the disc as a TEXTURE, for the VR eyes
+-- ------- the disc as a TEXTURE, for an anchored sky
 --
--- A VR eye must not paint the disc in screen space at all: a canvas-grid
--- painting re-snaps to different cells every head movement (jitter) and
--- holds its pattern square to the CANVAS (a rolled or pitched head
--- watches the sun's face turn). So the same cell art is baked once into
+-- A camera free to pitch must not paint the disc in screen space at all:
+-- a canvas-grid painting re-snaps to different cells every time the view
+-- moves (jitter) and holds its pattern square to the CANVAS (a rolled or
+-- pitched view watches the sun's face turn). So the same cell art is baked once into
 -- a texture, and Voxel3D hangs it on a quad ANCHORED IN THE WORLD --
 -- projected through the eye's own matrix like any geometry, stable under
 -- every head motion. Rebaked only when the palette or the twilight state
@@ -583,14 +584,14 @@ end
 -- with `horizonY` and `top` then read as distances ALONG it rather than as
 -- rows. nil is the level default. Only the shader path can tilt; the flat
 -- fallback paints level, which only a headless run ever sees. Under an
--- axis the DISC is not painted here at all -- the VR caller hangs the
--- baked disc (Sky.discImage) in the world instead; `body` still carries
+-- axis the DISC is not painted here at all -- the anchored caller hangs
+-- the baked disc (Sky.discImage) in the world instead; `body` still carries
 -- the twilight glow into the bands.
 --
 -- `ray` makes the gradient a SKYBOX: the eye's own ray fan (the camera
--- record's skyRay, from VRRig.eyeCamera), letting every pixel take its
--- band from its TRUE elevation -- so no motion of the head, on any axis,
--- moves a band; only the clock does. nil keeps the linear frame gradient
+-- record's skyRay -- StereoRig builds one per eye), letting every pixel
+-- take its band from its TRUE elevation -- so no motion of the view, on
+-- any axis, moves a band; only the clock does. nil keeps the linear frame gradient
 -- the flat screen has always painted.
 --
 -- Returns false when there is nothing to paint, in which case the caller's flat

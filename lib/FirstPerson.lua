@@ -76,6 +76,12 @@ FirstPerson.EYE_HEIGHT = 13
 FirstPerson.FOV = math.rad(65)
 FirstPerson.FOCUS_DIST = 24
 
+-- Life size, in world pixels per metre: 10 makes a 16-pixel tile a 1.6 m
+-- stride and a 13-pixel eye height 1.3 m off the ground. Anything authored
+-- in real units -- the horde's handgun is the only thing that is -- scales
+-- into the world through this.
+FirstPerson.PX_PER_METRE = 10
+
 -- Pitch limits, in radians below horizontal (positive looks DOWN). The
 -- world has no ceiling and the sky's bands sit low, so looking far up
 -- shows the void above the gradient; the up-range is clamped tighter than
@@ -213,23 +219,34 @@ function FirstPerson.blendEased()
   return ease(FirstPerson.blend)
 end
 
--- The blend, but only while the free-roam pass's own rig is the placed
--- camera. The battle scene places a camera of its own through the same
--- seam, and its cards must keep their stage lean rather than yawing at a
--- first-person eye that is not looking at them.
-function FirstPerson.cardBlend()
-  if not rig or Voxel3D.camera ~= rig then return 0 end
-  return ease(FirstPerson.blend)
+-- Cameras that count as this rig for cardBlend's purposes, besides the rig
+-- itself: the two eyes a stereo frame is drawn through, which ARE this rig
+-- -- slid half a separation either way and sheared (see StereoRig) -- but
+-- are not the same table, and identity is what cardBlend keys on.
+--
+-- A SET rather than a substitution. The old VR path swapped the eye INTO
+-- `rig`, which meant the rig itself changed twice a frame and everything
+-- that read it -- cardYaw, frameFor, the apparent facing -- answered from a
+-- different place each time. A flat screen cannot afford that: frameFor
+-- quantises to four sprite frames, and two eyes either side of a boundary
+-- would show the front of a character to one eye and its side to the other,
+-- which is retinal rivalry and not depth. So the rig stays the MONO camera
+-- and the eyes are merely admitted.
+local accepted = nil
+
+function FirstPerson.acceptCameras(set)
+  accepted = set
 end
 
--- A VR eye stepping into the rig's shoes: the VR pass builds its own
--- placed cameras (one per eye) and hands each one here as it draws, so
--- everything keyed to "the first-person rig is drawing" -- the billboard
--- yaw, the frame remap, the hidden player card -- answers for that eye.
--- In the diorama (blend 0) adoption is inert: cardBlend still reports
--- zero and the cards keep their lean.
-function FirstPerson.adoptVReye(record)
-  rig = record
+-- The blend, but only while the free-roam pass's own rig is the placed
+-- camera (or one of its eyes). The battle scene places a camera of its own
+-- through the same seam, and its cards must keep their stage lean rather
+-- than yawing at a first-person eye that is not looking at them.
+function FirstPerson.cardBlend()
+  if not rig then return 0 end
+  local cam = Voxel3D.camera
+  if cam ~= rig and not (accepted and accepted[cam]) then return 0 end
+  return ease(FirstPerson.blend)
 end
 
 -- Whether the player's own card should be left out of the camera draw:

@@ -1,7 +1,7 @@
 -- HORDE MODE: the way out.
 --
--- START (the pad's, the keyboard's ESCAPE, the touch overlay's) and the
--- VR left stick click all land here: a plain yes/no over the frozen
+-- START -- the pad's, the keyboard's ESCAPE, the touch overlay's -- lands
+-- here: a plain yes/no over the frozen
 -- world, asking whether to leave. YES hands over to Horde.finish, which
 -- is the same restore the GAME OVER card runs -- the map, the cell, the
 -- facing, the camera rung, the hour, the music and every NPC put back

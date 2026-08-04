@@ -106,7 +106,7 @@ function BattleBillboard.draw(tex, x, y, z, grow)
   local w, h = BattleBillboard.sizeFor(pw, ph)
   if grow then w, h = w * grow, h * grow end
   if w <= 0 or h <= 0 then return false end
-  local yaw = BattleBillboard.yawToward(x, z, Voxel3D.eye)
+  local yaw = BattleBillboard.yawToward(x, z, Voxel3D.eyeCenter or Voxel3D.eye)
   -- off the voxel grid, so no wireframe on it (see unitQuad)
   Voxel3D.seams(false)
   Voxel3D.draw(mesh, tex, BattleBillboard.matrix(x, y, z, w, h, yaw),
@@ -125,7 +125,7 @@ function BattleBillboard.caster(shadowMap, tex, x, y, z, grow)
   local w, h = BattleBillboard.sizeFor(pw, ph)
   if grow then w, h = w * grow, h * grow end
   if w <= 0 or h <= 0 then return false end
-  local yaw = BattleBillboard.yawToward(x, z, Voxel3D.eye)
+  local yaw = BattleBillboard.yawToward(x, z, Voxel3D.eyeCenter or Voxel3D.eye)
   shadowMap.draw(mesh, tex, BattleBillboard.matrix(x, y, z, w, h, yaw))
   return true
 end

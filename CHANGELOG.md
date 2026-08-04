@@ -1,5 +1,365 @@
 # Changelog
 
+## 1.7.0
+
+### Added
+
+- **Staged battles render in 3D.** The arena was already real geometry with
+  the two Pokemon standing on it as cards in the scene -- the flat pic layer
+  has been switched off since 3D-BTL shipped, precisely so nothing appears
+  twice -- so a fight was the one part of the mod still coming out at the
+  screen plane while the world around it had depth.
+
+  `BattleScene.render` now splits the same way the free-roam pass does, and
+  only where it has to: the pic textures, the sun's cast, the tile tick and
+  the mesh bookkeeping all still run ONCE and are shared, and only the
+  `beginScene`..`resolve` block runs twice, into slots of its own. So a 3D
+  battle costs a second scene pass rather than a second frame. The camera is
+  the battle rig's own placed shot handed to the same `Stereo3D.eyesFor`
+  the diorama uses, so the depth budget, the eased screen plane and the cut
+  detection are shared and cannot drift apart between the world and a fight.
+
+  The pins -- where each mon lands in GB space -- stay the LEFT eye's, and
+  deliberately. Everything they place is screen furniture drawn once into
+  the 160x144 canvas the engine composites over both eyes: the mons move
+  between the eyes because they are geometry, which is the point, and the
+  box their names are in does not, which is also the point.
+
+- **A battle's frame reaches the compose at all**, which it previously could
+  not. A staged fight goes to the screen through the engine's WORLD OVERRIDE
+  rather than through a render pipeline's world pass, so none of the
+  pipeline stages the free-roam path composes in ever runs while one is up.
+  The end-of-frame pass now takes a pair left by `Stereo3D.hold` and lifts
+  the interface out of the finished picture onto it, exactly as the present
+  stage would have -- which also makes it a complete fallback for the world
+  path if the engine turns out to have no present stage at all.
+
+- **The move animations stand in the world rather than on the glass.** On
+  one viewpoint they ride the GB frame, translated and scaled to follow
+  where the pair of mons went, and that is right. It cannot be right for
+  two: a layer has ONE depth, and an animation reaches across both mons --
+  one of them nearer than the screen and one further -- so pasted flat it
+  reads as a decal over a fight happening behind it.
+
+  So in 3D it stops being a layer. `BattleScene.fxCard` solves the plane on
+  which the authored slot marks land on the two cells, billboarded to
+  whichever eye is asking, and the effects go into the scene as geometry: a
+  burst authored at the foe's slot bursts at the foe's DISTANCE, and a beam
+  between them runs through the space between them. Depth-tested, so an
+  effect behind a tree is behind the tree.
+
+  Both halves of that already existed and had never run --
+  `OverworldBattle.animTexture` catches the engine's own layer on a canvas,
+  `fxCard` solves the plane, and the test suite already covered the plane's
+  arithmetic. They were written for a path that was cut before it shipped.
+  The flat layer is suppressed while they are in use, for the reason the
+  flat pic layer already is: otherwise every effect appears twice.
+
+- **The depth fades through a full-screen flash instead of strobing.** The
+  encounter flash is a frame this mod cannot give depth to: it covers the
+  world, so the interface lift finds the whole picture changed and has
+  nothing to lift, and the frame comes out flat. One flat frame would not
+  matter. A RUN of them alternating with the frames either side is a picture
+  that snaps in and out of depth several times a second, and the eyes
+  re-converge on every switch.
+
+  So the depth is taken out from under it: it eases to nothing over about a
+  tenth of a second, holds while the effect lasts, and eases back over a
+  third -- one dissolve instead of ten snaps.
+
+  **Measured, not predicted.** The first attempt hung the fade off the
+  events the mod already knew about -- a rung change, a fight starting --
+  and it did not work, because the flash that causes it happens BEFORE any
+  of them, out in the overworld, from engine code this mod never sees. So
+  the mask's own coverage is now watched every frame instead: whatever
+  covers the screen and whoever draws it, the fade notices. It is cheap
+  because it reads back the PREVIOUS frame's mask, which the GPU finished
+  before it presented -- a readback of this instant's would be a pipeline
+  stall, and one of last frame's is a memory copy.
+
+  The fade floors at three per cent of the budget rather than at nothing,
+  and that is load-bearing: at three per cent the disparity is a fraction of
+  a pixel, but the PAIR still exists, and the pair is what the detector
+  measures against. Fading it out of existence would blind the mod to the
+  very thing it faded for.
+
+### Known
+
+- **3D costs a second scene pass, and that is the whole of what it costs.**
+  Everything else it adds -- the compose, the interface lift, the private
+  copy of the left eye, the back-buffer capture -- is a handful of
+  fullscreen passes, which a GPU eats without noticing. The scene pass is
+  the expensive thing in this mod (`AntiAlias`'s own header says so, and it
+  is why that row ships OFF), and 3D asks for two of them.
+
+  Which means the honest failure mode is not slowness but JUDDER: a game
+  comfortably inside its vsync budget at one pass can sit right on the
+  boundary at two, and a frame that alternately makes and misses vsync
+  reads as stutter rather than as a lower frame rate. The levers a player
+  has are the ones that were always there -- **AA** first, then **WATER**,
+  then the camera rung.
+
+  There is a lever the mod does NOT yet have and probably should: rendering
+  the eyes at a fraction of the window and letting the compose scale them
+  up. It would cost almost nothing to add -- the compose already
+  bilinear-samples each eye up to output resolution, because the interlaced
+  and lenticular modes require it -- and it would halve the expensive half
+  directly.
+
+  `DS_PERF=1` with `tests/stereo_probe.lua` A/Bs the row against itself and
+  prints avg, p95, worst frame and the count of frames over 16.7 ms for
+  both, which is what says whether a given machine is in that band.
+
+
+### Fixed
+
+- **The coverage measurement no longer stops the frame dead.** The flash
+  detector reads one number off a canvas smaller than an icon, and the
+  obvious way to get it is the most expensive call in the feature:
+  `Canvas:newImageData` is `glReadPixels` underneath, which is SYNCHRONOUS
+  with every GL command issued before it. The driver drains the queue and
+  waits for the GPU to catch up -- which, in a mod that renders the scene
+  twice, is most of a frame. The size of the canvas is irrelevant; the
+  stall is the pipeline, not the bytes. Once a frame, it stops the CPU and
+  the GPU overlapping at all.
+
+  It goes through a PIXEL PACK BUFFER now (`GLBridge.readMeanAsync`), which
+  turns the same call inside out: with one bound, `glReadPixels` queues a
+  copy and returns at once, and the answer is collected two frames later --
+  by which time the GPU has long finished. Two buffers, alternating. The
+  answer is two frames old, which for a decision that holds for twenty is
+  not old at all.
+
+  Worth being exact about what this did NOT fix: the readback arrived with
+  the flash detector, late, and the stutter people are describing predates
+  it. This was a real per-frame stall and removing it is worth having on
+  its own -- it is not the answer to that. See the note on cost below.
+
+  Where the entry points are missing the blocking path is still there, one
+  frame in eight rather than every frame, which is survivable and still
+  often enough to catch a flash. `tests/stereo_probe.lua` reports which one
+  a machine is on: `Stereo.watch` is the cheap path, `Stereo.watchBlocking`
+  the other.
+
+- **The frame-time ring had never been filled.** `lib/Perf` has kept one
+  since it was written, and nothing had ever called `Perf.frame()` --
+  because until the end-of-frame wrap existed there was nowhere in the mod
+  that ran at the end of a frame. It is stamped there now, so a run with
+  `DS_PERF=1` finally reports what the player actually experiences rather
+  than only what the labelled spans cost. `tests/stereo_probe.lua` A/Bs the
+  3D row against itself and prints both.
+
+- Per-frame garbage on the 3D path: the eye list's two hooks and its accept
+  set were rebuilt every frame, and so were the compose parameters and the
+  battle's effects argument. All refilled now. Three small tables a frame
+  is not much on its own -- the point is that what a collector costs is not
+  the bytes but the pause, and a pause is the artefact this whole section
+  is about.
+
+- **A full-screen effect could latch the interface lift off for the
+  session.** The coverage probe that decides "there is no interface in this
+  mask to find" sampled five times in the first five seconds and latched on
+  any one of them -- so an encounter in the first few seconds of play turned
+  Mode A off until the game was restarted. It now latches only after the
+  reading has stayed high for two and a half SECONDS, which no flash does
+  and a genuine post-process always does.
+
+- `BattleDOF` kept a single ping/pong pair and always returned the same
+  canvas, so two same-size callers in one frame would alias -- the identical
+  bug already fixed in `TiltShift`, and dormant only because the pass is
+  disabled. Keyed by slot.
+- `OverworldBattle.snapHUDs` composited its frosted panels into `shot.canvas`
+  with no way to say which canvas. It takes an explicit target now, so the
+  second eye gets the same panels at the same place -- baked into the world
+  image rather than drawn in the GB frame, they are not something the
+  interface lift could have recovered.
+- A held pair is good for exactly one frame. Two passes can leave one (the
+  world pass and the battle's update) and on a frame where neither ran -- a
+  wipe between the two, a screen pushed over both -- the last one would have
+  been packed against a picture from a different moment.
+
+## 1.6.1
+
+### Fixed
+
+- **The LeiaSR weave came out vertically mirrored.** LOVE stores a canvas
+  with row zero at the TOP and GL reads a texture with `v = 0` at the
+  BOTTOM. Every consumer inside LOVE shares LOVE's convention, so the
+  question never comes up -- and the SR weaver is not inside LOVE. Handed a
+  canvas as it stood, it read our top row as its bottom one.
+
+  Fixed by flipping the weaver's INPUT rather than its output, which is the
+  distinction that matters: the lenticular pattern is a function of the
+  OUTPUT pixel and of where the window sits on the panel, so flipping what
+  the weaver writes takes the pattern with it, one row out of phase with the
+  lenses -- and the 3D does not come back upside down, it stops existing.
+  The on-screen side-by-side fallback is composed unflipped as before.
+
+- **The main menu and every other 2D screen now split per eye**, at zero
+  disparity, which puts them on the screen plane. The title screen, the mod
+  manager, dialogs, battle screens, transition wipes and the flat 2D
+  overworld never go through a world pass, so none of them reached the
+  compose at all -- and on a side-by-side display a full-width menu drawn
+  across two half-width eyes is not a menu. The 3D row is a statement about
+  the DISPLAY, and a display does not stop expecting its format between one
+  screen and the next.
+
+  Done at the end of `love.draw`, which is the only seam that runs on every
+  frame rather than only on frames a render pipeline drew: the finished
+  picture is read back off the back buffer, laid out as both eyes, and put
+  back. Skipped on any frame already laid out upstream -- packing a packed
+  picture would fold two eyes into one half of two.
+
+  Windows only, because the readback is (there is no LOVE call for the back
+  buffer -- `captureScreenshot` answers next frame, which is a frame too
+  late). Where it is unavailable the world stays in 3D, the 2D screens stay
+  flat, and the console says which and why.
+
+### Changed
+
+- **The DPI advice now names the fix that actually works.** A weave lands as
+  3D only when its output covers physical panel pixels one for one, and a
+  host the OS is DPI-virtualising has its finished frame stretched after
+  every shader in it. Nothing inside the process can reach that: awareness
+  is declared once, first declaration wins, and SDL declares it while LOVE
+  starts up.
+
+  Setting it from the shim was tried and did not help -- neither
+  per-monitor awareness on the SR thread nor correcting the SR service's
+  own window resize touches the thing being stretched, which is the whole
+  window -- so that code is gone rather than left in as decoration. What
+  works is outside the process: mark the EXECUTABLE per-monitor DPI aware
+  (Properties, Compatibility, Change high DPI settings, Override high DPI
+  scaling behaviour, scaling performed by Application), which is what the
+  console message now says.
+
+## 1.6.0
+
+### Added
+
+- **Stereoscopic 3D: the 3D options row.** The whole diorama, rendered from
+  two viewpoints and packed for whatever will separate them again -- side by
+  side and over/under for 3D televisions, capture and desktop headset
+  viewers; row-interlaced for passive 3D TVs and projectors; column-
+  interlaced and checkerboard for the passive monitors that use them;
+  red-cyan Dubois anaglyph for a pair of paper glasses and any screen at
+  all; and a woven output for a Leia / Simulated Reality autostereoscopic
+  panel, which needs no glasses.
+
+  It costs ONE extra scene pass and not a second frame. The shadow map, the
+  pose capture and the glint step are computed once and shared, and the two
+  eyes are drawn through the same closure into two cached canvases -- so the
+  only thing the pair can possibly disagree about is where it is standing,
+  which is the only thing stereo is allowed to differ by.
+
+  **The depth budget is solved, not set.** The comfort constraint on a flat
+  screen is the ANGLE a disparity subtends at the player, which for a player
+  who does not move their chair is a fraction of screen width -- so the
+  separation comes out of that rather than out of a guess at an IPD:
+
+      sep = K * tan(fov/2) * (vw/vh) * conv
+
+  Feed that back through the disparity and every length cancels: the far
+  horizon lands at `K/2` of the screen -- 2.5% at the default -- at every
+  field of view, every rung of the ladder, every zoom and every window
+  shape. The battle camera's lens opens as it swings and the depth does not
+  move; the first-person blend runs from 53 degrees to 65 and the depth does
+  not move. That is the whole of "auto 3D scaling", in closed form and with
+  no state to get wrong.
+
+  Which is also the trap, and worth writing down: the version of that
+  compensation you find in an injection mod -- a `tan(fov/2)/tan(ref/2)`
+  factor multiplying a fixed separation -- is the SAME correction, and
+  applying it on top of the rule above applies it twice. Separation then
+  goes as the square of the FoV ratio and puts back exactly the inflation it
+  was added to remove. There is one `tan` in `lib/StereoRig.lua` and there
+  should stay one.
+
+  **3D DEPTH**, **3D FOCUS** and **3D SWAP** appear under the row while it
+  is on: how much of the budget to spend, where the screen plane sits
+  relative to whatever the camera is looking at, and which physical eye gets
+  which image. That last is a row rather than a constant because no software
+  can ask a passive filter which way its polarisation runs, a shutter driver
+  what phase it is on, or a lenticular panel which column it starts with --
+  and a picture with its eyes crossed still LOOKS like 3D, just inside out.
+
+- **The orbit's sky becomes a real skybox while 3D is on.** The classic sky
+  hangs its gradient off the FRAME, which makes it identical in both eyes --
+  i.e. pinned to the screen -- with distant ground receding BEHIND something
+  that is in front of it. The eye notices, at the horizon, and cannot fuse
+  it. Each eye now carries its own ray fan, built from the very tangents its
+  projection is, so infinity lands at infinity and the sky cannot disagree
+  with the geometry about where that is. The flat path is untouched.
+
+- **The engine's 2D interface reaches both eyes.** The host draws its
+  dialogs, menus and battle screen AFTER this mod's world canvas and never
+  shows them to it -- which is fine for the left eye, which IS the frame the
+  engine composited, and no good at all for the right, which has a world and
+  no words on it. So the finished frame is compared against a private copy
+  of the left eye taken before the engine touched it, and wherever the two
+  differ, that is the interface: composited onto the right eye as well, at
+  zero parallax, on the screen plane where a dialog box belongs.
+
+  Where that is not available -- an engine with no stage after its own UI,
+  or a mask that finds the WHOLE frame changed and so has no interface to
+  lift -- the compose moves up to before the UI instead. For the interlaced,
+  checkerboard, anaglyph and LEIA formats that is exactly right and costs
+  nothing: those pack into one full-resolution picture, so a pixel drawn
+  once is a pixel both eyes see. Only SBS and T/B suffer. Which of the two
+  paths is in force is DISCOVERED -- a two-attempt registration, a watchdog
+  on the stage actually firing, and a coverage probe read back off the GPU a
+  handful of times when 3D first engages -- and reported on the console and
+  in the row's status.
+
+### Changed
+
+- **Removed the VR row and the whole OpenXR stack.** `lib/VRXR.lua` (1073
+  lines of FFI), `lib/VR.lua`, `lib/VRRig.lua`, `lib/Pokedex.lua`, the
+  Khronos loader DLL and the NuGet package it came out of: about 1,300 lines
+  of Lua and five megabytes of binaries, to reach an audience that owns a
+  headset and is willing to start SteamVR to look at a Game Boy diorama. The
+  3D row reaches everyone else -- a television, a projector, a monitor, a
+  Leia panel, or a pair of paper glasses and whatever screen is already
+  there -- for one shader and a second scene pass.
+
+  What the VR path was RIGHT about survives it. `lib/VRGL.lua` is now
+  `lib/GLBridge.lua`, keeping its three rules verbatim, because the SR
+  weaver needs exactly what OpenXR needed: the GL texture behind a LOVE
+  canvas, and a window to align against. `VoxelScene.render`'s two-eye path
+  and `Voxel3D`'s per-slot canvas cache were built for a headset and needed
+  no change at all for a monitor.
+
+- `Voxel3D.viewProjection`'s two derived branches are now one, over a camera
+  DESCRIPTION (`Voxel3D.monoCamera`) that the stereo rig can shear into two
+  eyes. Behaviour is identical to the last element of the matrix, which the
+  suite asserts against the pre-refactor arithmetic written out longhand.
+
+- `Voxel3D.eyeCenter` joins `Voxel3D.eye`. The eye stays per-eye and has to:
+  specular, the glass glint and the water's reflections are functions of
+  where the viewer actually stands. But "which way does this card face" is
+  the opposite question -- `FirstPerson.frameFor` picks one of four
+  quantised sprite frames, and two eyes either side of a boundary would show
+  a character's front to one and their side to the other, which is retinal
+  rivalry and not depth. Billboards yaw at the centre.
+
+- The tilt-shift blur is taken over by the 3D path while it is on, and run
+  per eye into its own ping/pong pair. The engine's own stage sees ONE
+  canvas -- one eye of two -- and a pair blurred on one side has nothing
+  left to fuse. Doing it this way round rather than by ordering the two
+  pipelines also means the feature does not depend on an ordering that is
+  the engine's business.
+
+- `ModSetting` can be given a default that is not its first rung. A ladder's
+  order is how it reads when you step through it -- 50, 75, 100, 150 up to
+  300 per cent -- and a ramp that starts in the middle so its default can be
+  first reads as a fault.
+
+### Fixed
+
+- `TiltShift.getCanvases` kept a single ping/pong pair and handed it back
+  for any request of the same size, which two same-size callers in one frame
+  would have shared. Keyed by slot now.
+
 ## 1.5.5
 
 ### Added

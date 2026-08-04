@@ -4,19 +4,13 @@
 -- that closes in when something reaches you, and the banners -- "A
 -- DARKNESS APPROACHES", then "WAVE 1" and every wave after it.
 --
--- IT IS DRAWN TWICE, INTO TWO DIFFERENT PLACES, and that is not
--- duplication for its own sake. The flat screen's HUD goes into the SCENE
--- canvas through Voxel3D.beginOverlay -- the same seam the overworld's FX
--- bubbles use -- because that canvas is what the window composites. A
--- headset never sees that canvas: with VR live the window's world pass
--- short-circuits to the mirror, and the eyes are rendered on their own in
--- lib/VR. So the eye canvases get their own pass, at the same instant the
--- VR frame paints its fade over them, in the same 2D idiom.
---
--- Both call the same draw with a different scale and a different safe
--- area: a headset wants everything well inside the lens rather than
--- pinned to the corners, because the corners of a VR frame are off the
--- edge of the visible world.
+-- IT GOES INTO THE SCENE CANVAS through Voxel3D.beginOverlay -- the same
+-- seam the overworld's FX bubbles use -- because that canvas is what the
+-- window composites. In 3D there are two of those canvases and this is
+-- drawn into BOTH, identically: a readout is screen furniture, and drawing
+-- the same pixels into both eyes is exactly what puts it on the screen
+-- plane where furniture belongs. (The crosshair rides along, which is
+-- honest: it marks a direction, not a distance.)
 --
 -- EVERY WORD IS ON A WHITE PLATE, and that is not a style choice -- it is
 -- what the font is. The Game Boy font sheets are BLACK glyphs on
@@ -58,7 +52,7 @@ HordeHud._layout = nil        -- assigned below, once `layout` exists
 -- ------- pieces
 --
 -- Every helper takes a scale `s` and draws in GB pixels multiplied by it,
--- so one layout serves a 4x window and a headset's eye buffer alike.
+-- so one layout serves a 4x window and a supersampled canvas alike.
 
 local PAD = 3           -- plate padding, in GB pixels
 
@@ -255,8 +249,7 @@ end
 
 -- ------- the whole thing
 --
--- `inset` is how far off the edges the corners sit, which is the one real
--- difference between a window and a headset.
+-- `inset` is how far off the edges the corners sit.
 
 local function draw(w, h, s, inset)
   local sess = Horde.session
@@ -363,122 +356,8 @@ function HordeHud.drawFlat(w, h, scale)
   draw(w, h, s, 8 * s)
 end
 
--- ------- and the headset's, which is not a screen overlay at all
---
--- A VR eye gets NO 2D overlay. An earlier cut drew this same HUD into
--- both eye canvases and it came out torn down the middle: the eye frusta
--- are ASYMMETRIC, so the same canvas pixel is a different ANGLE in each
--- eye, and the two images never fuse. Nor is there a crosshair to draw --
--- the gun is a real object with real sights and the shot goes down its
--- barrel, so a dot painted at the centre of the frame would be pointing
--- at something else entirely.
---
--- What the headset gets instead is this: the readout as a TEXTURE, which
--- lib/VR puts on the POKEDEX in the player's left hand -- already
--- tracked, already lit, and already the surface this mod shows
--- information on. Geometry in the world, so both eyes see it from their
--- own position and the stereo is correct by construction. (It rode the
--- gun for one revision and that was worse: a screen on the slide sits
--- exactly where the iron sights have to be looked through.)
---
--- Sized to the device's own screen, which is the GB frame's 10:9.
-
-local panelCanvas = nil
-local PANEL_W, PANEL_H = 160, 144
-
-function HordeHud.panelTexture()
-  if not Horde.active then return nil end
-  if not (love.graphics and love.graphics.newCanvas) then return nil end
-  local sess = Horde.session
-  if not sess then return nil end
-  local F = font()
-  if not F then return nil end
-
-  if not panelCanvas then
-    local ok, c = pcall(love.graphics.newCanvas, PANEL_W, PANEL_H)
-    if not ok then return nil end
-    panelCanvas = c
-    pcall(panelCanvas.setFilter, panelCanvas, "nearest", "nearest")
-  end
-
-  local Gun = V.require("HordeGun")
-  local ammo, mag, reloading = Gun.ammo()
-
-  local ok = pcall(function()
-    love.graphics.push("all")
-    love.graphics.setCanvas(panelCanvas)
-    love.graphics.setBlendMode("alpha")
-    love.graphics.clear(0.93, 0.94, 0.90, 1)
-
-    -- the health bar, framed, across the top
-    love.graphics.setColor(0, 0, 0, 1)
-    love.graphics.rectangle("fill", 8, 8, PANEL_W - 16, 20)
-    love.graphics.setColor(0.80, 0.80, 0.78, 1)
-    love.graphics.rectangle("fill", 11, 11, PANEL_W - 22, 14)
-    love.graphics.setColor(0.78, 0.12, 0.16, 1)
-    love.graphics.rectangle("fill", 11, 11,
-                            (PANEL_W - 22) * math.max(0, sess.hp / sess.maxHp),
-                            14)
-
-    love.graphics.setColor(0, 0, 0, 1)
-    F.draw(("HP %d"):format(math.ceil(sess.hp)), 8, 34)
-    F.draw(reloading and "RELOADING" or ("AMMO %d/%d"):format(ammo, mag),
-           8, 50)
-
-    -- the round pips, so ammunition reads without counting digits
-    local pipW, gap = 9, 5
-    for i = 1, mag do
-      if i <= ammo and not reloading then
-        love.graphics.setColor(0.85, 0.65, 0.10, 1)
-      else
-        love.graphics.setColor(0.72, 0.73, 0.70, 1)
-      end
-      love.graphics.rectangle("fill", 8 + (i - 1) * (pipW + gap), 66, pipW, 12)
-    end
-
-    love.graphics.setColor(0, 0, 0, 1)
-    F.draw(("WAVE %d"):format(math.max(1, sess.wave)), 8, 86)
-    F.draw(("%d"):format(math.floor(sess.score)), 8, 102)
-
-    -- and the banner, wrapped to the panel rather than to the frame.
-    -- BLACK on the panel's own white, like everything else here: the font
-    -- sheets are black glyphs on transparent, so a pale letter is not a
-    -- thing that can be drawn (see the header).
-    if sess.bannerText then
-      local lines, bs, tr = layout(F, sess.bannerText, 1, PANEL_W - 8)
-      if lines then
-        local top = PANEL_H - 8 * bs * #lines - 5
-        love.graphics.setColor(0, 0, 0, 1)
-        love.graphics.rectangle("fill", 0, top - 2, PANEL_W, 1)
-        for i, line in ipairs(lines) do
-          local pen = math.floor((PANEL_W - line.width) / 2)
-          local ly = PANEL_H - 8 * bs * (#lines - i + 1) - 3
-          for _, code in ipairs(F.encode(line.text)) do
-            love.graphics.push()
-            love.graphics.translate(pen, ly)
-            love.graphics.scale(bs, bs)
-            F.drawCode(code, 0, 0)
-            love.graphics.pop()
-            pen = pen + F.advanceOf(code) * bs + tr
-          end
-        end
-      end
-    end
-
-    love.graphics.setCanvas()
-    love.graphics.pop()
-  end)
-  pcall(love.graphics.setCanvas)
-  if not ok then return nil end
-  return panelCanvas
-end
-
 -- window resize / hot reload
 function HordeHud.invalidate()
-  if panelCanvas and panelCanvas.release then
-    pcall(panelCanvas.release, panelCanvas)
-  end
-  panelCanvas = nil
 end
 
 return HordeHud

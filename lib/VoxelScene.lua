@@ -26,7 +26,6 @@ local VoxelGrid = V.require("VoxelGrid")
 local DayNight = V.require("DayNight")
 local FirstPerson = V.require("FirstPerson")
 local BattleBillboard = V.require("BattleBillboard")
-local Pokedex = V.require("Pokedex")
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
 
@@ -272,12 +271,11 @@ end
 -- -- and cardBlend is zero for every camera that is not the first-person
 -- rig, the battle's placed shot included, so nothing else moves.
 -- The pitch the sprite cards lean back by -- normally the rung's own
--- camera angle, overridable in radians. VR sets the override to the top
--- rung's 75 degrees for every diorama and battle frame: a table watched
--- from a freely moving head has no one camera pitch for the cards to
--- match, and the near-upright top-rung lean is the pose that reads as
--- "standing" from anywhere around it. nil (the default, and the flat
--- screen always) leans with the rung as ever.
+-- camera angle, overridable in radians for a caller whose viewpoint has no
+-- single pitch for the cards to match. nil, the default and what the mod
+-- ships with, leans with the rung as ever. (Stereo does NOT override it:
+-- two eyes half a separation apart still share one pitch, which is the
+-- whole reason a stereo pair fuses.)
 VoxelScene.spriteLean = nil
 
 local function leanAngle()
@@ -796,7 +794,7 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   if not ShadowMap.available() then return end
   local sig = shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh)
   -- a staged fight's pics move every frame the animation does, and the sun
-  -- has to follow them (VR frames only; see render)
+  -- has to follow them (world-pass battle frames only; see render)
   if battleToken then sig = sig .. "|btl" .. tostring(battleToken) end
   if not ShadowMap.stale(sig) then return end
   if not ShadowMap.begin(cx, cy, vw, vh) then return end
@@ -858,7 +856,8 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
                                             mirror)))
     end
   end
-  -- a staged fight's mons (VR frames only): the same cards the eye pass
+  -- a staged fight's mons, where a caller keeps the world up through one:
+  -- the same cards the eye pass
   -- stands on the arena, snugged like every thin card, marked as the cast
   -- so the water can decline them like everybody else's silhouette
   for _, card in ipairs(battleCards or {}) do
@@ -871,10 +870,37 @@ end
 
 -- Render the world. Without `eyes`, one frame into one canvas -- the flat
 -- path every rung has always taken. With `eyes` -- a list of
--- { camera, w, h, slot, adopt } records, plus optional cx/cy for the
--- scene centre -- the same frame is drawn once per entry and the list of
--- canvases comes back: the VR path, two eyes over one shared shadow map,
--- pose capture and glint step.
+-- { camera, w, h, slot } records -- the same frame is drawn once per entry
+-- and the list of canvases comes back: two eyes over ONE shared shadow map,
+-- pose capture and glint step, which is what makes stereo cost a second
+-- scene pass rather than a second frame.
+--
+-- The list also carries three optional hooks, all of them about WHOSE
+-- camera it is:
+--
+--   cx, cy      the scene centre, for a caller that has one of its own.
+--   deriveFlat  run the flat path's first-person rig first, and then
+--               build the cameras from whatever it left behind -- which is
+--               how stereo works: the mod's own camera, split in two.
+--   build(cx, cy, vw, vh)
+--               fill in each entry's `camera`, after the rig has run and
+--               before anything is drawn. False means "no usable pair this
+--               frame" and the whole call falls back to one mono pass.
+--   overlay(w, h)
+--               screen-space 2D, drawn into EACH eye inside the loop. It
+--               has to be in here rather than after: Voxel3D.project reads
+--               the live view-projection, so an overlay anchored to a world
+--               point lands at its own depth in each eye, and one that is
+--               genuinely screen-space is drawn identically into both and
+--               so sits on the screen plane. Both from one hook.
+--   worldCards  fetch the staged battle's cards, for a caller that keeps
+--               the OVERWORLD up through a fight and wants the fight
+--               standing on it. NOTHING SETS THIS. It is here because the
+--               machinery is complete and the question it answers is a
+--               reasonable one to ask again -- but a staged battle now
+--               renders its own arena in 3D (BattleScene.render), which is
+--               a better answer than showing the fight from the walking
+--               camera, so no caller wants it today.
 function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- With nothing cached at all (the first frame of a fresh toggle),
   -- return nil: the engine keeps the 2D path for the frame and
@@ -926,22 +952,32 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- the orbit's view centre into the head, so the curve's focus and the
   -- depth reference follow the camera actually in charge.
   --
-  -- A VR frame skips all of it: the caller brought its own cameras, and
-  -- its own idea of the scene centre with them.
-  if not eyes then
+  -- A caller that brought its own cameras AND its own scene centre skips
+  -- all of it. A STEREO caller does not: its two eyes are this very rig,
+  -- slid apart, so the rig has to be built first and asked afterwards --
+  -- which is what deriveFlat says and what build() then reads.
+  if not eyes or eyes.deriveFlat then
     local fpRig, fpCx, fpCy = FirstPerson.frame(me, cx, cy, vw, vh)
     if fpRig then cx, cy = fpCx, fpCy end
   elseif eyes.cx then
     cx, cy = eyes.cx, eyes.cy
   end
 
-  -- A staged fight, seen by the VR eyes: the flat screen draws the battle
-  -- SCREEN while one is up (this pass never runs), but the headset keeps
-  -- looking at the world, so the world had better have the fight on it.
-  -- Fetched per frame for the sun, and again per EYE in drawScene, because
-  -- the cards yaw toward whichever eye is asking.
+  -- and now the cameras, from the rig that just ran. A refusal here -- a
+  -- camera with no basis to slide along, or one that brought raw matrices
+  -- and cannot be decomposed -- drops the whole frame to one mono pass
+  -- rather than to nothing.
+  if eyes and eyes.build and not eyes.build(cx, cy, vw, vh) then
+    eyes = nil
+  end
+
+  -- A staged fight, seen by a caller that keeps looking at the WORLD while
+  -- one is up: the flat screen draws the battle SCREEN instead (this pass
+  -- never runs), so the world had better have the fight on it. Fetched per
+  -- frame for the sun, and again per EYE in drawScene, because the cards
+  -- yaw toward whichever eye is asking.
   local battleCards, battleTex, battleToken = nil, nil, nil
-  if eyes then
+  if eyes and eyes.worldCards then
     local okB, cards, tex, token = pcall(function()
       return V.require("OverworldBattle").worldCards()
     end)
@@ -959,7 +995,7 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
               water, nbWater, battleCards, battleToken)
 
   -- Everything between beginScene and endScene, as one function: the flat
-  -- path runs it once, a VR frame runs it once PER EYE -- same posed
+  -- path runs it once, a stereo frame runs it once PER EYE -- same posed
   -- list, same shadow map, same glint, so the two eyes can never disagree
   -- about anything but their viewpoint.
   local function drawScene()
@@ -1051,7 +1087,8 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- test, so buildings and trees really occlude.
   drawCast(state, posed, atlasFor)
   -- The staged fight's mons, standing on their arena cells in THIS eye's
-  -- view (VR frames only; battleTex is nil otherwise). Rebuilt per eye
+  -- view (world-pass battle frames only; battleTex is nil otherwise).
+  -- Rebuilt per eye
   -- because the cards yaw toward the eye that is looking. No wireframe
   -- and no glass on them for the reasons BattleBillboard and the battle
   -- pass each argue: the cards are not on the voxel grid, and their
@@ -1094,7 +1131,7 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- is preserved, so the row still overdraws feet -- the 3D version of
   -- the GB's grass-over-feet trick -- while grass keeps losing to the
   -- buildings it genuinely stands behind (far deeper than the pull).
-  -- the same angle the cards leaned by (leanAngle honours VR's override),
+  -- the same angle the cards leaned by (leanAngle honours the override),
   -- so the tuft rows keep exactly the characters' own depth handicap
   local lean = math.max(leanAngle(), 0.05)
   local pull = VoxelScene.pull(lean)
@@ -1124,26 +1161,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
                  ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
   end
 
-  -- The VR pokedex in the player's left hand, last of all: a prop over
-  -- the world drawn with real depth, so leaning it into a wall still
-  -- occludes honestly. Its frame only exists while a session is live and
-  -- the left hand is tracked (VR.lua sets it), so every flat frame skips
-  -- this in one field read. No wireframe and no glass, like the cast:
-  -- the device is a drawing riding the scene, not part of the terrain.
-  if Pokedex.frame then
-    Voxel3D.glass(false)
-    Voxel3D.seams(false)
-    Pokedex.draw()
-    Voxel3D.seams(true)
-    Voxel3D.glass(true)
-  end
-
-  -- HORDE MODE's handgun, in the same slot and for the same reasons: a
-  -- prop over the world with real depth, no wireframe and no glass. In VR
-  -- it rides the tracked right hand (lib/VR placed it this frame); on the
-  -- flat screen it is carried by the camera, which is why it draws here
-  -- rather than in the overlay -- a view model that is 2D cannot be
-  -- occluded by the wall the player just backed into.
+  -- HORDE MODE's handgun, last of all: a prop over the world with real
+  -- depth, no wireframe and no glass. It is carried by the camera, which
+  -- is why it draws here rather than in the overlay -- a view model that
+  -- is 2D cannot be occluded by the wall the player just backed into, and
+  -- in 3D it has to have a position for the two eyes to disagree about.
   do
     local HordeGun = V.require("HordeGun")
     if HordeGun.visible() then
@@ -1165,22 +1187,26 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     return Voxel3D.endScene()
   end
 
-  -- The VR frame: the same scene once per eye, each into its own named
-  -- canvas slot under its own placed camera. `adopt` hands the eye's
-  -- record to FirstPerson as the live rig, which is what turns the
-  -- billboards toward THIS eye in first person (cardBlend keys on rig
-  -- identity -- see FirstPerson) and leaves them leaning in the diorama,
-  -- where the blend is zero.
+  -- The stereo frame: the same scene once per eye, each into its own named
+  -- canvas slot under its own camera. Everything expensive already ran
+  -- above and is shared, so the two passes can differ in nothing but their
+  -- viewpoint -- which is the only difference stereo is allowed to have.
   local out = {}
   for i, eye in ipairs(eyes) do
     Voxel3D.camera = eye.camera
-    if eye.adopt then FirstPerson.adoptVReye(eye.camera) end
     if not Voxel3D.beginScene(eye.w, eye.h, cx, cy, vw, vh,
                               skyFor(state.map), eye.slot) then
       return nil
     end
     drawScene()
+    -- endScene first, then the overlay, exactly as the flat path does it:
+    -- beginOverlay re-binds the canvas the pass just closed, and the view
+    -- projection it will be measured against is still this eye's
     out[i] = Voxel3D.endScene()
+    if eyes.overlay and Voxel3D.beginOverlay() then
+      eyes.overlay(eye.w, eye.h)
+      Voxel3D.endOverlay()
+    end
   end
   return out
 end

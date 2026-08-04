@@ -201,12 +201,11 @@ BattleCam.zoomGoal = 1
 -- there under BACK SPRITES and two degrees is not a composition problem.
 BattleCam.steerable = true
 
--- Hold the rig perfectly still (VR sets this while a session runs). The
--- drift exists to give a FLAT screen the depth cue the picture cannot
--- have; a headset gets real parallax from the player's own head, and a
--- picture that sways on its own inside VR reads as the world lurching --
--- on the floating panel especially, where the battle screen is watched
--- from a fixed seat.
+-- Hold the rig perfectly still. Nothing in the mod sets it today; it is
+-- the lever a caller that supplies its own parallax would pull, because
+-- the drift exists to give a flat, single-viewpoint picture the depth cue
+-- it cannot otherwise have -- and a picture that sways on its own for a
+-- viewer who already has real parallax reads as the world lurching.
 BattleCam.still = false
 
 BattleCam.t = 0
@@ -359,8 +358,8 @@ end
 
 -- How much world the frame holds right now: the rig's own reach at the
 -- player's zoom and at whatever the orbit has done to the pair's spacing,
--- or the rig's own alone whenever both are being withheld (VR's fixed
--- seat, BACK SPRITES' pinned composition). The sun's box is fitted to this
+-- or the rig's own alone whenever both are being withheld (a fixed seat,
+-- BACK SPRITES' pinned composition). The sun's box is fitted to this
 -- too, so a zoomed shot lights exactly the ground it shows -- which is why
 -- BattleScene asks this rather than multiplying for itself.
 function BattleCam.frameH(arena)
@@ -419,7 +418,7 @@ function BattleCam.rig(arena, groundY, canonical)
   groundY = groundY or 0
   local R = BattleCam.rigFor(arena)
   local mx, mz = arena.mid[1], arena.mid[2]
-  -- VR asks for the same stillness for its own reason (see BattleCam.still)
+  -- see BattleCam.still for the other way this is asked for
   local fixed = BattleCam.still or canonical
   -- and the steer is withheld a second way, on its own: BACK SPRITES holds
   -- the composition and the DRIFT still runs under it (see steerable)

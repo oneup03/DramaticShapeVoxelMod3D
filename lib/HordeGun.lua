@@ -1,38 +1,28 @@
 -- HORDE MODE: the handgun.
 --
--- A voxel model in the player's right hand, authored here in METRES the
--- way lib/Pokedex authors the device in the left one -- because the VR
--- mapping's scale is what turns metres into world pixels, a mesh built
--- this way is the right size in the hand at every scale the mod has, and
--- the same mesh serves the flat screen's view model.
+-- A voxel model in the player's right hand, authored in METRES and scaled
+-- into world pixels by FirstPerson.PX_PER_METRE -- so the mesh is the right
+-- size in the hand whatever the world around it is doing.
 --
--- IN VR the gun rides the tracked right hand through VRRig.propMatrix,
--- pointed by the runtime's AIM pose where one exists (the pose a runtime
--- defines as "where the user is pointing") and by the grip pose where it
--- does not. You aim it by pointing it. The iron sights are real geometry,
--- and lining them up is how you shoot accurately, because the shot is
--- traced down the model's own barrel axis.
+-- There is no hand to track, so the gun is carried by the camera: a model
+-- matrix built from the first-person eye and its yaw and pitch, with the
+-- gun hanging at the hip until the player aims. AIM DOWN SIGHTS slides it
+-- to the centre of the screen with the sight line ON the eye axis -- the
+-- model is authored with its rear notch at the origin precisely so that
+-- offset is (0, 0, forward) -- and narrows the field of view, which is the
+-- whole of what aiming does here.
 --
--- ON THE FLAT SCREEN there is no hand to track, so the gun is carried by
--- the camera: a model matrix built from the first-person eye and its yaw
--- and pitch, with the gun hanging at the hip until the player aims. AIM
--- DOWN SIGHTS slides it to the centre of the screen with the sight line
--- ON the eye axis -- the model is authored with its rear notch at the
--- origin precisely so that offset is (0, 0, forward) -- and narrows the
--- field of view, which is the whole of what aiming does here.
---
--- THE SHOT IS A RAY, traced the same way in both modes: march it in world
--- pixels, let terrain height stop it (a wall is a tall cell, so a cell
--- whose ground is above the ray's height is a wall the bullet hits), and
--- test every live mob against it as a standing cylinder. Nearest wins,
--- and a hit above the shoulder line counts double.
+-- THE SHOT IS A RAY: march it in world pixels, let terrain height stop it
+-- (a wall is a tall cell, so a cell whose ground is above the ray's height
+-- is a wall the bullet hits), and test every live mob against it as a
+-- standing cylinder. Nearest wins, and a hit above the shoulder line counts
+-- double.
 
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
 
 local Mat4 = V.require("Mat4")
 local Voxel3D = V.require("Voxel3D")
-local VRRig = V.require("VRRig")
 local FirstPerson = V.require("FirstPerson")
 local Horde = V.require("Horde")
 local HordeSfx = V.require("HordeSfx")
@@ -55,39 +45,11 @@ HordeGun.ADS_FOV = math.rad(40)
 HordeGun.HIP = { -0.115, -0.125, 0.30 }
 HordeGun.ADS = { 0, -0.002, 0.34 }
 
--- Where it sits relative to the tracked hand, in METRES and in the POSE's
--- own axes -- so with the barrel pointed away from the player (see below)
--- -Z is forward, and this nudges the gun a little down and forward of the
--- pose origin so the hand is behind it rather than inside it.
-HordeGun.HAND_OFFSET = { 0, -0.012, -0.02 }
-
--- THE BARREL, AND WHICH WAY IS FORWARD.
---
--- OpenXR's AIM pose -- the one this rides where the runtime offers it --
--- is defined with its **-Z axis pointing the way the user is aiming**.
--- The model below is authored with its barrel along **+Z**, because that
--- is what the flat screen's view model wants (Ry(yaw)*Rx(pitch) carries
--- +Z onto the look direction). Half a turn about Y is what reconciles
--- them, and it is the whole of the attachment.
---
--- Getting this wrong does not read as "slightly off": the first cut
--- copied the Pokedex's quarter-turn about X, which lays a flat slab along
--- the controller's body and is exactly right for a slab -- on a gun it
--- pointed the muzzle at the player's own face.
-HordeGun.HAND_YAW = math.pi
-
--- AND A PITCH, because a hand is not a tripod. A controller held the way
--- you hold a pistol -- fist closed, wrist cocked -- has its own aim axis
--- running up and forward out of the top of your fist, well above the line
--- your hand FEELS like it is pointing along. A model laid flat on that
--- axis reads as a gun held by somebody with a broken wrist.
---
--- So the gun tips its muzzle down 45 degrees off the pose, which puts the
--- barrel back on the line the grip implies. The shot follows: the ray is
--- read off the finished matrix's own +Z column (see place), so it comes
--- out of the barrel as drawn rather than off the pose it was hung on --
--- point the gun, hit the thing.
-HordeGun.HAND_PITCH = math.rad(45)
+-- THE BARREL, AND WHICH WAY IS FORWARD. The model is authored with its
+-- barrel along +Z, because that is what the view model wants:
+-- Ry(yaw)*Rx(pitch) carries +Z onto the look direction, so the gun points
+-- where the camera does and the shot -- read off the finished matrix's own
+-- +Z column -- comes out of the barrel as drawn.
 
 -- ------- the model
 --
@@ -202,8 +164,6 @@ local gun = {
   adsBlend = 0,
   kick = 0,
   flash = 0,
-  frame = nil,        -- the VR hand's model matrix for this frame
-  ray = nil,          -- the VR aim ray in world space, if there is one
 }
 
 HordeGun.state = gun
@@ -213,7 +173,6 @@ function HordeGun.reset()
   gun.reloading, gun.reloadT, gun.reloadStage = false, 0, 0
   gun.cooldown, gun.kick, gun.flash = 0, 0, 0
   gun.ads, gun.adsBlend = false, 0
-  gun.frame, gun.ray = nil, nil
 end
 
 -- how far into the aim the sights are, 0..1 -- read by the HUD (the
@@ -232,11 +191,9 @@ end
 
 -- ------- the shot
 
--- The eye and the direction it is looking, in world pixels. In VR this is
--- the gun's own barrel (set by the VR frame); on the flat screen it is
--- the camera, because the gun follows the camera exactly.
+-- The eye and the direction it is looking, in world pixels -- which is
+-- also where the gun points, because the gun follows the camera exactly.
 local function ray(G)
-  if gun.ray then return gun.ray end
   local ow = G and G.overworld
   if not (ow and ow.player and ow.map) then return nil end
   local p = ow.player
@@ -311,7 +268,7 @@ local function pick(G, r, maxT)
 end
 
 -- Pull the trigger. Every input device funnels here (see Horde.install,
--- FirstPerson's mouse and touch wraps, and VR.driveControls), so the
+-- FirstPerson's mouse and touch wraps), so the
 -- cooldown below is also what keeps two devices reporting the same press
 -- from spending two rounds.
 function HordeGun.fire()
@@ -399,59 +356,19 @@ function HordeGun.update(dt, live)
   end
 end
 
--- ------- VR placement
---
--- Called from the VR frame with the same mapping the eyes got. `pose` is
--- the tracked right hand -- the runtime's aim pose where it has one.
-
-function HordeGun.place(pose, pivot, anchor, scale, yaw)
-  if not (Horde.active and pose) then
-    HordeGun.clear()
-    return
-  end
-  local m = VRRig.propMatrix(pose, pivot, anchor, scale, yaw)
-  m = Mat4.mul(m, Mat4.translate(HordeGun.HAND_OFFSET[1],
-                                 HordeGun.HAND_OFFSET[2],
-                                 HordeGun.HAND_OFFSET[3]))
-  m = Mat4.mul(m, Mat4.rotateY(HordeGun.HAND_YAW))
-  m = Mat4.mul(m, Mat4.rotateX(HordeGun.HAND_PITCH))
-  -- the recoil, up and back along the gun's own axes
-  local k = gun.kick
-  if k > 0 then
-    m = Mat4.mul(m, Mat4.translate(0, 0, -0.05 * k))
-    m = Mat4.mul(m, Mat4.rotateX(-0.30 * k))
-  end
-  gun.frame = m
-
-  -- the barrel, in world pixels: the shot goes where the gun points, so
-  -- lining the sights up with an eye is what aims it
-  local o = { m[4], m[8], m[12] }
-  local dx, dy, dz = m[3], m[7], m[11]        -- the model's +Z column
-  local len = math.sqrt(dx * dx + dy * dy + dz * dz)
-  if len > 1e-6 then
-    gun.ray = { o[1], o[2], o[3], dx / len, dy / len, dz / len }
-  else
-    gun.ray = nil
-  end
-end
-
-function HordeGun.clear()
-  gun.frame, gun.ray = nil, nil
-end
-
 -- ------- drawing
 --
--- Runs inside VoxelScene's drawScene, once per eye in VR and once per
--- frame flat, after the world -- so the gun composites with real depth
+-- Runs inside VoxelScene's drawScene -- once per frame flat, once per EYE
+-- in 3D -- after the world, so the gun composites with real depth
 -- and leaning it into a wall occludes honestly.
 
 -- Should the gun be drawn at all this frame? Keyed on the first-person
--- rig's own IDENTITY rather than on the rung's number, because a staged
--- VR battle places a camera through the same seam and the gun has no
--- business in it.
+-- rig's own IDENTITY rather than on the rung's number, because the staged
+-- battle places a camera through the same seam and the gun has no business
+-- in it. (cardBlend accepts the two stereo eyes as that rig -- see
+-- FirstPerson.acceptCameras -- so a 3D frame draws the gun in both.)
 function HordeGun.visible()
   if not Horde.active then return false end
-  if gun.frame then return true end
   return FirstPerson.cardBlend() > 0.35
 end
 
@@ -481,7 +398,8 @@ local function flatModel()
   local m = Mat4.translate(eye[1], eye[2], eye[3])
   m = Mat4.mul(m, Mat4.rotateY(FirstPerson.yaw))
   m = Mat4.mul(m, Mat4.rotateX(FirstPerson.pitch - 0.34 * k))
-  m = Mat4.mul(m, Mat4.scale(VRRig.FP_SCALE, VRRig.FP_SCALE, VRRig.FP_SCALE))
+  m = Mat4.mul(m, Mat4.scale(FirstPerson.PX_PER_METRE, FirstPerson.PX_PER_METRE,
+                             FirstPerson.PX_PER_METRE))
   m = Mat4.mul(m, Mat4.translate(ox, oy, oz))
   if gun.reloading then
     local t = math.min(1, gun.reloadT / HordeGun.RELOAD_TIME)
@@ -493,7 +411,7 @@ end
 
 function HordeGun.draw()
   if not HordeGun.visible() then return end
-  local model = gun.frame or flatModel()
+  local model = flatModel()
   if not model then return end
   local body, pal = buildBody(), palette()
   if not (body and pal) then return end

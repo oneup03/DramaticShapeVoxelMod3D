@@ -6,11 +6,11 @@
 -- here -- translation in the fourth column, m[4]/m[8]/m[12].
 --
 -- Only what the renderer actually needs: a perspective projection (the
--- camera), an orthographic one (the sun's shadow pass), an asymmetric one
--- (a headset's per-eye frustum), a look-based view, a quaternion rotation
--- (a headset's pose), and the translate/rotateY/scale a model matrix is
--- built from. No general inverse -- the VR view inverts its rigid pieces
--- one at a time.
+-- camera), an orthographic one (the sun's shadow pass), an OFF-CENTRE one
+-- (a stereo eye's frustum, which is the symmetric one sheared sideways),
+-- a look-based view, a quaternion rotation, and the translate/rotateY/scale
+-- a model matrix is built from. No general inverse -- nothing here needs
+-- to invert anything that is not already rigid.
 
 local Mat4 = {}
 
@@ -64,10 +64,10 @@ function Mat4.rotateX(a)
            0, 0, 0, 1 }
 end
 
--- The rotation a unit quaternion describes, row-major. The VR rig is what
--- needs it: an OpenXR eye pose arrives as position + orientation
--- quaternion, and both the eye's transform and its inverse (the view) are
--- built from this.
+-- The rotation a unit quaternion describes, row-major. Kept for callers
+-- that receive an orientation rather than a look direction; a pure rotation
+-- is its own inverse under transpose, so both a transform and its view can
+-- be built from one of these without a general inverse.
 function Mat4.fromQuat(x, y, z, w)
   local xx, yy, zz = x * x, y * y, z * z
   local xy, xz, yz = x * y, x * z, y * z
@@ -78,8 +78,8 @@ function Mat4.fromQuat(x, y, z, w)
            0, 0, 0, 1 }
 end
 
--- Transpose. For a pure rotation this IS the inverse, which is how the VR
--- view matrix is assembled without a general 4x4 inverse.
+-- Transpose. For a pure rotation this IS the inverse, which is how a view
+-- matrix can be assembled without a general 4x4 inverse.
 function Mat4.transpose(m)
   return { m[1], m[5], m[9], m[13],
            m[2], m[6], m[10], m[14],
@@ -87,20 +87,35 @@ function Mat4.transpose(m)
            m[4], m[8], m[12], m[16] }
 end
 
--- Right-handed perspective from an OpenXR-style asymmetric field of view:
--- four signed HALF-ANGLES off the view axis (left and down negative), onto
--- GL clip space (z in [-1, 1]). A headset's per-eye frustum is off-centre
--- -- the nose side is narrower than the temple side -- so the symmetric
--- perspective() above cannot express it.
-function Mat4.fovProjection(angleLeft, angleRight, angleUp, angleDown,
-                            near, far)
-  local l, r = math.tan(angleLeft), math.tan(angleRight)
-  local u, d = math.tan(angleUp), math.tan(angleDown)
+-- Right-handed perspective from an OFF-CENTRE frustum given as the TANGENTS
+-- of its four edges off the view axis (left and down negative), onto GL clip
+-- space (z in [-1, 1]).
+--
+-- Tangents rather than angles because that is the unit every caller already
+-- has one of. A stereo eye's frustum is the symmetric one with both vertical
+-- edges slid sideways by the same amount (StereoRig), and the amount is a
+-- ratio of two lengths -- an offset over a convergence distance -- which is a
+-- tangent and never was an angle. Taking the atan of it just to take the tan
+-- again inside would be arithmetic that only loses precision.
+--
+-- The (r + l) / w term is the whole of the off-centredness: it is zero for a
+-- symmetric frustum, and it SHEARS clip x with depth rather than translating
+-- it, which is exactly the difference between two eyes that converge on a
+-- plane and two eyes that have simply been slid apart.
+function Mat4.frustumTan(l, r, u, d, near, far)
   local w, h, dz = r - l, u - d, near - far
   return { 2 / w, 0, (r + l) / w, 0,
            0, 2 / h, (u + d) / h, 0,
            0, 0, (far + near) / dz, (2 * far * near) / dz,
            0, 0, -1, 0 }
+end
+
+-- The same frustum from four signed HALF-ANGLES off the view axis, which is
+-- the shape a runtime that tracks a head quotes a field of view in.
+function Mat4.fovProjection(angleLeft, angleRight, angleUp, angleDown,
+                            near, far)
+  return Mat4.frustumTan(math.tan(angleLeft), math.tan(angleRight),
+                         math.tan(angleUp), math.tan(angleDown), near, far)
 end
 
 -- Right-handed perspective onto GL clip space (z in [-1, 1]).

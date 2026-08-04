@@ -43,8 +43,106 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The one compiled thing in this repository: an MSVC bridge between the mod's
+  # LuaJIT FFI and the Simulated Reality OpenGL weaver (see leiasr_shim/). It
+  # cannot be built on the Ubuntu runner that packs the archive, so it is built
+  # here and handed over as an artifact.
+  #
+  # Every failure here is SOFT. `continue-on-error`, and a release job that
+  # needs it but runs `if: always()`, mean a missing PAT, an SDK that moved or
+  # a compiler that changed its mind costs the release its LEIA rung and
+  # nothing else. Every other 3D format is pure Lua and a shader.
+  shim:
+    runs-on: windows-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # bo3b/SR-lib is PRIVATE, and two details of fetching it are
+      # load-bearing:
+      #
+      #   actions/checkout writes an http.https://github.com/.extraheader
+      #   holding a token scoped to THIS repository, and git applies it to
+      #   every github.com URL -- including a third-party one, which then 401s.
+      #   It has to come out before the PAT goes in, or the PAT looks broken.
+      #
+      #   the insteadOf rewrite has to be --global. `git submodule update`
+      #   spawns a SEPARATE `git clone` process, which reads global and system
+      #   config and never the parent repository's local config; with --local
+      #   the rewrite is silently ignored, the clone goes out unauthenticated,
+      #   and the job HANGS on a credential prompt rather than failing.
+      - name: Fetch SR-lib
+        id: srlib
+        shell: bash
+        env:
+          SUBMODULE_PAT: ${{ secrets.SHARED_PAT || secrets.SUBMODULE_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUBMODULE_PAT:-}" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No SHARED_PAT/SUBMODULE_PAT secret is set, so the SR SDK cannot be fetched and this release will ship without the LEIA rung. Every other 3D mode is unaffected."
+            exit 0
+          fi
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git config --global url."https://x-access-token:${SUBMODULE_PAT}@github.com/".insteadOf "https://github.com/"
+          # The gitlink is the normal route. It is also the one thing in this
+          # repository that a plain `git add -A` in a tree with no submodules
+          # checked out will quietly stage as a deletion -- so if it has gone
+          # missing, clone the URL .gitmodules names rather than failing over
+          # a piece of index bookkeeping.
+          if git submodule status libs/SR-lib >/dev/null 2>&1; then
+            git submodule update --init libs/SR-lib
+          else
+            echo "::warning::libs/SR-lib is not a registered submodule; cloning it from .gitmodules instead. The SDK version is then whatever is on the branch rather than the pinned commit."
+            url="$(git config -f .gitmodules --get submodule.libs/SR-lib.url)"
+            git clone --depth 1 "$url" libs/SR-lib
+          fi
+          git config --global --remove-section url."https://x-access-token:${SUBMODULE_PAT}@github.com/" || true
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build the shim
+        if: steps.srlib.outputs.available == 'true'
+        run: |
+          cmake -S leiasr_shim -B leiasr_shim/build -A x64
+          cmake --build leiasr_shim/build --config Release
+
+      # Every SR DLL must be DELAY-loaded, or leiasr_shim.dll refuses to load
+      # at all on a machine with no SR runtime -- which is most machines, and
+      # the failure is a Windows loader dialog naming a library the mod has
+      # never heard of. Cheap to check, miserable to discover in the wild.
+      - name: Check the delay-load list held
+        if: steps.srlib.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          $dll = "leiasr_shim/build/Release/leiasr_shim.dll"
+          $out = & dumpbin /imports $dll
+          $text = $out -join "`n"
+          $hard = ($text -split "Section contains the following delay load imports")[0]
+          $bad = [regex]::Matches($hard, '(?im)^\s{4}(\S+\.dll)') |
+                 ForEach-Object { $_.Groups[1].Value } |
+                 Where-Object { $_ -notmatch '^(KERNEL32|OPENGL32|USER32|ADVAPI32|api-ms-win-)' }
+          if ($bad) {
+            Write-Error "hard-linked, should be delay-loaded: $($bad -join ', ')"
+            exit 1
+          }
+          Write-Host "no hard SR imports"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.srlib.outputs.available == 'true'
+        with:
+          name: leiasr-shim
+          path: leiasr_shim/build/Release/leiasr_shim.dll
+          if-no-files-found: error
+
   release:
     runs-on: ubuntu-latest
+    # the shim is optional payload, never a gate: always() runs this job
+    # whether the Windows one succeeded, failed or was skipped outright
+    needs: shim
+    if: always()
 
     steps:
       - name: Checkout
@@ -126,6 +224,15 @@ jobs:
             exit 1
           fi
 
+      # continue-on-error, because the whole point of the soft shim job is
+      # that a release without a DLL is still a release
+      - name: Fetch the shim
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: leiasr-shim
+          path: ${{ runner.temp }}/shim
+
       - name: Build the mod .zip
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -141,6 +248,20 @@ jobs:
 
           rm -rf "$staging/.github" "$staging/.gitattributes" \
                  "$staging/.gitignore" "$staging/.luarc.json"
+
+          # The shim's SOURCE stays in the repository and out of the archive:
+          # a player installs a DLL, not the C++ it was built from. (git
+          # archive carries no submodule contents either way, so libs/ arrives
+          # empty at best.)
+          rm -rf "$staging/leiasr_shim" "$staging/libs" "$staging/.gitmodules"
+
+          if [ -f "$RUNNER_TEMP/shim/leiasr_shim.dll" ]; then
+            mkdir -p "$staging/assets/leiasr"
+            cp "$RUNNER_TEMP/shim/leiasr_shim.dll" "$staging/assets/leiasr/"
+            echo "staged leiasr_shim.dll ($(stat -c%s "$staging/assets/leiasr/leiasr_shim.dll") bytes)"
+          else
+            echo "::warning::No leiasr_shim.dll artifact, so this release ships without the LEIA rung. Every other 3D mode is unaffected."
+          fi
 
           python3 - "$staging/manifest.json" "$VERSION" <<'PY'
           import json, sys

@@ -152,9 +152,10 @@ T.check(fullIds["DRAMATIC_SHAPE:battleBack"], "and BACK SPRITES with it")
 -- and AA, for the opposite reason: it is not a knob on the look at all, it is
 -- what the look COSTS, and only the player knows what their machine can carry
 T.check(fullIds["DRAMATIC_SHAPE:aa"], "and AA, which FULL neither sets nor owns")
--- VR survives FULL on AA's reasoning: whether a headset is on the desk is
--- not the diorama's to decide
-T.check(fullIds["DRAMATIC_SHAPE:vr"], "and VR, likewise the hardware's question")
+-- and 3D on the same reasoning: what is on the desk in front of the player
+-- is not the diorama's to decide
+T.check(fullIds["DRAMATIC_SHAPE:stereo"],
+  "and 3D, likewise the hardware's question")
 
 -- DAYTIME is not only hidden under FULL, it is HELD at SYNC: the row cannot
 -- be reached while FULL owns it, so a value changed underneath (the mod
@@ -4112,19 +4113,24 @@ end)()
 end)()
 end
 
--- ------- the VR rig's arithmetic
+-- ------- the stereo rig's arithmetic
 --
--- VRRig is the deliberately pure half of the VR stack: headset poses in,
--- placed cameras out, with no FFI anywhere -- so the suite can hold a
--- synthetic head still and check the world lands where the design says.
--- (The FFI half -- VRXR, VRGL -- is exercised by tests/vr_probe.lua
--- against a real runtime, which a headless suite cannot be.)
+-- StereoRig is the deliberately pure half of the 3D stack: one camera in,
+-- two eyes out, with no FFI and no love.graphics anywhere -- so the suite
+-- can hold a synthetic camera still and check that the disparity lands
+-- where the design says. (The device-shaped half -- the compose shader, the
+-- SR weaver -- is exercised by tests/stereo_probe.lua against a real
+-- window, which a headless suite cannot be.)
+--
+-- The two assertions that matter most are the SIGN ones. A stereo build
+-- that is inside-out still looks like 3D at a glance, and the only thing
+-- that tells you otherwise is which way a near object's two images lie.
 
 -- an immediately-run function rather than a bare do-block: the main chunk
 -- is brushing LuaJIT's 200-active-locals ceiling, and a function scope
 -- keeps this section's locals off the chunk's own count
-local function vrRigSection()
-local VRRig = run.loader.exports.DRAMATIC_SHAPE.lib.require("VRRig")
+local function stereoRigSection()
+local StereoRig = run.loader.exports.DRAMATIC_SHAPE.lib.require("StereoRig")
 local Mat4 = run.loader.exports.DRAMATIC_SHAPE.lib.require("Mat4")
 
 local function near(a, b, eps) return math.abs(a - b) < (eps or 1e-5) end
@@ -4136,154 +4142,195 @@ local function apply(m, x, y, z)
          m[9] * x + m[10] * y + m[11] * z + m[12]
 end
 
--- identity quaternion, head at the LOCAL origin: the eye lands ON the
--- pivot offset by the anchor, and the view carries a world point at the
--- pivot to `anchor` metres in eye space
-local pose = { pos = { 0, 0, 0 }, quat = { 0, 0, 0, 1 } }
-local fov = { angleLeft = -0.7, angleRight = 0.7,
-              angleUp = 0.6, angleDown = -0.6 }
-local pivot = { 1000, 0, 2000 }
-
-local S = 128    -- an arbitrary table scale; eyeCamera takes any
-local cam = VRRig.eyeCamera(pose, fov, pivot, VRRig.TABLE, S)
-T.check(near(cam.eye[1], 1000 - VRRig.TABLE[1] * S)
-        and near(cam.eye[2], -VRRig.TABLE[2] * S)
-        and near(cam.eye[3], 2000 - VRRig.TABLE[3] * S),
-  "the diorama eye stands the table's offset from the pivot, scaled")
-T.eq(cam.curve, 0, "a VR camera declines the world curve outright")
-T.check(near(cam.fov, 1.2), "fov is the vertical angular span")
-
--- the view ends in METRES: the pivot itself lands at `anchor` in eye
--- space, however big the scale is
-local vx, vy, vz = apply(cam.view, pivot[1], pivot[2], pivot[3])
-T.check(near(vx, VRRig.TABLE[1]) and near(vy, VRRig.TABLE[2])
-        and near(vz, VRRig.TABLE[3]),
-  "the view un-scales the world: the pivot sits at the table offset, "
-  .. "in metres")
-
--- a point one metre of world east of the pivot lands one metre east in
--- eye space -- the scale cancels end to end
-local ex, ey, ez = apply(cam.view, pivot[1] + S, pivot[2], pivot[3])
-T.check(near(ex - vx, 1) and near(ey, vy) and near(ez, vz),
-  "one scale's worth of world east is one metre east in eye space")
-
--- ------- the diorama presents at the rung's own angle and framing
---
--- The anchor sits VIEW_DIST along the rung's viewing angle: at 35 degrees
--- mostly below the head, at 75 mostly ahead of it -- so the resting head
--- looks at the model along exactly the line the flat camera uses.
-local a35 = VRRig.dioramaAnchor(math.rad(35), 0)
-T.check(near(a35[2], -VRRig.VIEW_DIST * math.cos(math.rad(35)))
-        and near(a35[3], -VRRig.VIEW_DIST * math.sin(math.rad(35))),
-  "the 35-degree anchor hangs the table down-and-ahead at the rung's angle")
-local a75 = VRRig.dioramaAnchor(math.rad(75), 0)
-T.check(a75[3] < a35[3] and a75[2] > a35[2],
-  "75 degrees brings the table up toward eye level and further out")
-T.check(near(VRRig.dioramaAnchor(math.rad(35), 0.25)[2], a35[2] + 0.25),
-  "the grab-drag height rides the anchor straight up")
-
--- and the scale reproduces the flat screen's framing: vh world pixels
--- subtend the flat lens's field at VIEW_DIST
-local sc = VRRig.dioramaScale(432, 1.0)
-T.check(near(sc, 432 / VRRig.VIEW_DIST),
-  "the diorama scale is the flat framing carried to arm's length")
-
--- first person: anchor at the origin pins the head to the pivot exactly
-local fpCam = VRRig.eyeCamera(pose, fov, { 108, 13, 208 }, { 0, 0, 0 },
-                              VRRig.FP_SCALE)
-T.check(near(fpCam.eye[1], 108) and near(fpCam.eye[2], 13)
-        and near(fpCam.eye[3], 208),
-  "first person pins the start-of-session head to the player's head")
-
--- head motion moves the eye by metres-times-scale
-local moved = VRRig.eyeCamera({ pos = { 0.1, 0.2, -0.3 },
-                                quat = { 0, 0, 0, 1 } },
-                              fov, { 108, 13, 208 }, { 0, 0, 0 },
-                              VRRig.FP_SCALE)
-T.check(near(moved.eye[1], 109) and near(moved.eye[2], 15)
-        and near(moved.eye[3], 205),
-  "a headset step moves the eye by metres times the scale")
-
--- with no rotation, the eye looks along LOCAL -Z, which is world NORTH
-T.check(fpCam.focus[3] < fpCam.eye[3] - 1,
-  "an identity orientation looks north, the LOCAL -Z convention")
-
--- headYawPitch round-trips this mod's conventions: identity looks north
--- (yaw pi), and a quarter turn about +Y (counterclockwise from above)
--- swings the forward from north to WEST (yaw -pi/2)
-local yaw, pitch = VRRig.headYawPitch({ 0, 0, 0, 1 })
-T.check(near(math.abs(yaw), math.pi) and near(pitch, 0),
-  "an identity head faces north, level")
-local s = math.sin(math.pi / 4)
-yaw = VRRig.headYawPitch({ 0, s, 0, math.cos(math.pi / 4) })
-T.check(near(yaw, -math.pi / 2),
-  "a quarter turn about +Y faces west -- the compass agrees with the "
-  .. "right-hand rule")
-
--- the asymmetric projection: a point ON the left frustum plane lands at
+-- the off-centre projection: a point ON the left frustum plane lands at
 -- clip x = -w, one on the up plane at clip y = +w
 local proj = Mat4.fovProjection(-0.5, 0.3, 0.4, -0.2, 0.1, 100)
-local px_, py_, pz_ = nil, nil, nil
 local function clip(m, x, y, z)
   local cx = m[1] * x + m[2] * y + m[3] * z + m[4]
   local cy = m[5] * x + m[6] * y + m[7] * z + m[8]
   local cw = m[13] * x + m[14] * y + m[15] * z + m[16]
   return cx / cw, cy / cw
 end
-local lx = math.tan(-0.5) * 2      -- on the left plane, 2 units out
-local cxL = clip(proj, lx, 0, -2)
+local cxL = clip(proj, math.tan(-0.5) * 2, 0, -2)
 T.check(near(cxL, -1, 1e-4), "the left fov angle lands on clip x = -1")
-local uy = math.tan(0.4) * 2
-local _, cyU = clip(proj, 0, uy, -2)
+local _, cyU = clip(proj, 0, math.tan(0.4) * 2, -2)
 T.check(near(cyU, 1, 1e-4), "the up fov angle lands on clip y = +1")
+-- and fovProjection is now frustumTan with an atan in front of it, so the
+-- two must agree to the last bit
+local tanProj = Mat4.frustumTan(math.tan(-0.5), math.tan(0.3),
+                                math.tan(0.4), math.tan(-0.2), 0.1, 100)
+local sameTan = true
+for i = 1, 16 do if proj[i] ~= tanProj[i] then sameTan = false end end
+T.check(sameTan, "fovProjection is frustumTan of the four tangents, exactly")
 
--- Mat4.fromQuat: a quarter turn about Y takes +X to -Z
-local R = Mat4.fromQuat(0, s, 0, math.cos(math.pi / 4))
-local rx, ry, rz = apply(R, 1, 0, 0)
-T.check(near(rx, 0) and near(ry, 0) and near(rz, -1),
-  "fromQuat: a quarter turn about +Y carries east into north")
-
--- ------- the battle mount: the over-the-shoulder seat, faced right
+-- ------- monoCamera describes the same camera viewProjection draws
 --
--- The seat sits BATTLE_DIST along the flat battle camera's own line from
--- its aim point, and the yaw is whatever turns XR forward (north) onto
--- that line's look direction.
-local seat, byaw = VRRig.battleMount({ 100, 35, 332 }, { 100, 2, 200 })
-local sdx = seat[1] - 100
-local sdy = seat[2] - 2
-local sdz = seat[3] - 200
-T.check(near(math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz),
-             VRRig.BATTLE_DIST, 1e-3),
-  "the battle seat sits BATTLE_DIST from the aim point")
-T.check(near(byaw, 0),
-  "a camera due south of its focus looks north -- XR forward, yaw 0")
-local eyaw = select(2, VRRig.battleMount({ 150, 10, 200 }, { 100, 10, 200 }))
-T.check(near(eyaw, math.pi / 2),
-  "a camera east of its focus turns the mapping a quarter toward west")
+-- The refactor that made the description a value of its own has to be
+-- invisible: these two rebuild the pre-refactor arithmetic literally and
+-- demand the live path match it element for element.
+local V3Dm = run.loader.exports.DRAMATIC_SHAPE.lib.require("Voxel3D")
+local Voxm = run.loader.exports.DRAMATIC_SHAPE.lib.require("VoxelState")
+local function sameMatrix(got, want, what)
+  local worst = 0
+  for i = 1, 16 do worst = math.max(worst, math.abs(got[i] - want[i])) end
+  T.check(worst < 1e-12, what .. " (worst element off by " .. worst .. ")")
+end
 
--- an eye seated with that yaw really faces the arena: an identity head at
--- the seat comes out looking WEST, and the view agrees to the metre
-local seated = VRRig.eyeCamera(pose, fov, { 150, 10, 200 }, { 0, 0, 0 },
-                               VRRig.FP_SCALE, math.pi / 2)
-T.check(near(seated.eye[1], 150) and near(seated.eye[3], 200),
-  "the yawed mapping still pins the resting head to the pivot")
-T.check(seated.focus[1] < seated.eye[1] - 1,
-  "and turns its gaze west, toward the focus it was seated against")
-local wx2, wy2, wz2 = apply(seated.view, 150 - VRRig.FP_SCALE, 10, 200)
-T.check(near(wx2, 0) and near(wy2, 0) and near(wz2, -1),
-  "the yawed view carries one metre west of the pivot to one metre ahead")
+local hadCam0, hadAngle = V3Dm.camera, Voxm.angle
+local hadEye0, hadFocus0 = V3Dm.eye, V3Dm.focus
+V3Dm.camera = nil
+Voxm.angle = math.rad(35)
+do
+  local cx, cy, vw, vh = 320, 480, 512, 288
+  local a, focal = Voxm.angle, Voxm.FOCAL
+  local dist = focal * vh
+  local fovO = 2 * math.atan(1 / (2 * focal))
+  local focusO = { cx, 0, cy }
+  local eyeO = { cx, dist * math.cos(a), cy + dist * math.sin(a) }
+  local upO = { 0, math.sin(a), -math.cos(a) }
+  local pO = Mat4.perspective(fovO, vw / vh,
+                              math.max(1, dist * 0.05), dist * 4 + 4096)
+  pO = Mat4.mul(Mat4.scale(1, -1, 1), pO)
+  sameMatrix(V3Dm.viewProjection(cx, cy, vw, vh),
+             Mat4.mul(pO, Mat4.lookAt(eyeO, focusO, upO)),
+             "the orbit projects exactly as it did before monoCamera")
+  local monoO = V3Dm.monoCamera(cx, cy, vw, vh)
+  T.eq(monoO.fan, false, "and declines the ray fan, as the orbit always has")
+  T.eq(V3Dm.skyRayLive, nil, "so the orbit's sky stays frame-hung")
+end
 
--- the sky's RAY FAN round-trips the eye's own projection: the direction
--- the fan hands a canvas point looks along projects back to that very
--- point, through a rotated head AND a yawed mapping -- one sign wrong
--- anywhere here and the skybox paints sideways or upside down
-local rayCam = VRRig.eyeCamera({ pos = { 0.2, 1.1, -0.4 },
-                                 quat = { 0, s, 0, math.cos(math.pi / 4) } },
-                               fov, { 50, 0, 70 }, { 0, 0, 0 }, 10,
-                               math.pi / 3)
-local rm = Mat4.mul(Mat4.mul(Mat4.scale(1, -1, 1), rayCam.proj), rayCam.view)
-local function rayFrac(u, v)
-  local sr = rayCam.skyRay
+V3Dm.camera = { eye = { 100, 13, 200 }, focus = { 130, 18, 160 },
+                fov = 1.1, up = { 0, 1, 0 } }
+do
+  local cx, cy, vw, vh = 0, 0, 512, 288
+  local dx, dy, dz = 100 - 130, 13 - 18, 200 - 160
+  local dist = math.max(1, math.sqrt(dx * dx + dy * dy + dz * dz))
+  local pP = Mat4.perspective(1.1, vw / vh,
+                              math.max(1, dist * 0.05), dist * 4 + 4096)
+  pP = Mat4.mul(Mat4.scale(1, -1, 1), pP)
+  sameMatrix(V3Dm.viewProjection(cx, cy, vw, vh),
+             Mat4.mul(pP, Mat4.lookAt({ 100, 13, 200 }, { 130, 18, 160 },
+                                      { 0, 1, 0 })),
+             "and so does a placed camera")
+  T.check(V3Dm.monoCamera(cx, cy, vw, vh).fan,
+    "a placed free-pitch camera asks for the ray fan")
+end
+
+-- a camera that brought its own matrices cannot be decomposed, and says so
+V3Dm.camera = { eye = { 0, 0, 0 }, focus = { 0, 0, -1 }, fov = 1,
+                view = Mat4.identity(), proj = Mat4.identity() }
+T.eq(V3Dm.monoCamera(0, 0, 512, 288), nil,
+  "a raw-matrix camera has no description to hand back -- render mono")
+V3Dm.camera, Voxm.angle = hadCam0, hadAngle
+V3Dm.eye, V3Dm.focus, V3Dm.eyeCenter = hadEye0, hadFocus0, nil
+V3Dm.skyRayLive = nil
+
+-- ------- the eyes
+--
+-- One synthetic camera, looking north along -Z from a round distance, and
+-- every assertion below reads its two eyes' NDC through the matrices the
+-- rig actually hands the renderer.
+local mono = {
+  eye = { 0, 0, 0 }, focus = { 0, 0, -300 }, up = { 0, 1, 0 },
+  fov = 2 * math.atan(0.5), dist = 300,
+  near = 15, far = 5096, curve = nil, fan = true,
+}
+local VW, VH = 512, 288
+local sepM, convM = StereoRig.budget(mono, VW, VH, 1, 1)
+local tanXM = StereoRig.tanX(mono, VW, VH)
+T.check(near(convM, 300),
+  "convergence follows the camera's own subject distance")
+T.check(near(sepM, StereoRig.K * tanXM * convM),
+  "and separation is solved from the budget, not guessed")
+
+local eyeL, eyeR = StereoRig.pair(mono, sepM, convM, VW, VH, true)
+T.check(eyeL ~= nil and eyeR ~= nil, "a usable camera yields a pair")
+T.check(near(eyeL.eye[1], -sepM / 2) and near(eyeR.eye[1], sepM / 2),
+  "the eyes stand half a separation either side, along the camera's right")
+T.check(near(eyeL.eye[2], 0) and near(eyeL.eye[3], 0),
+  "and nowhere else -- the offset is purely sideways")
+
+-- NDC x of a world point, in one eye, through the same matrices Voxel3D
+-- multiplies (the clip-space Y flip touches y only, so x is untouched)
+local function ndcX(e, x, y, z)
+  local m = Mat4.mul(e.proj, e.view)
+  local cx = m[1] * x + m[2] * y + m[3] * z + m[4]
+  local cw = m[13] * x + m[14] * y + m[15] * z + m[16]
+  return cx / cw
+end
+
+-- ON the screen plane the two eyes agree exactly. This is the whole
+-- definition of convergence and it has to be exact, not close.
+T.check(math.abs(ndcX(eyeL, 30, 12, -convM) - ndcX(eyeR, 30, 12, -convM)) < 1e-12,
+  "a point at the convergence distance lands on the same pixel in both eyes")
+
+-- SIGN TEST (a): nearer than convergence must be CROSSED -- the left eye's
+-- image lies to the RIGHT of the right eye's. Get this backwards and the
+-- whole world reads inside-out while still looking like 3D.
+T.check(ndcX(eyeL, 0, 0, -convM / 2) > ndcX(eyeR, 0, 0, -convM / 2),
+  "nearer than convergence, the left eye's image is to the RIGHT of the "
+  .. "right eye's -- crossed disparity, the thing that reads as pop-out")
+T.check(ndcX(eyeL, 0, 0, -convM * 4) < ndcX(eyeR, 0, 0, -convM * 4),
+  "and beyond it the two uncross again")
+
+-- the budget, at infinity. Disparity there is sep/(conv*tanX) in NDC, and
+-- NDC spans two units across the frame -- so K/2 of the screen width.
+local function infDisparity(m, vw, vh, depthMul)
+  local sp, cv = StereoRig.budget(m, vw, vh, depthMul, 1)
+  local a, b = StereoRig.pair(m, sp, cv, vw, vh, true)
+  -- a direction rather than a point: w drops the translation column, which
+  -- is exactly what "at infinity" means
+  local function dirX(e)
+    local mm = Mat4.mul(e.proj, e.view)
+    local x = mm[1] * 0 + mm[2] * 0 + mm[3] * -1
+    local w = mm[13] * 0 + mm[14] * 0 + mm[15] * -1
+    return x / w
+  end
+  return math.abs(dirX(a) - dirX(b)) * 0.5   -- NDC spans 2 -> fraction of width
+end
+
+-- the same 2.5% at every rung of the ladder, every window shape, and both
+-- ends of the first-person blend: this IS auto 3D scaling, and if the FoV
+-- term were applied twice these numbers would fan out as its square
+for _, fovDeg in ipairs({ 20, 40, 53.13, 65, 90 }) do
+  local m2 = { eye = { 0, 0, 0 }, focus = { 0, 0, -300 }, up = { 0, 1, 0 },
+               fov = math.rad(fovDeg), dist = 300,
+               near = 15, far = 5096, fan = true }
+  T.check(near(infDisparity(m2, VW, VH, 1), StereoRig.K / 2, 1e-9),
+    ("the horizon sits K/2 of the screen apart at a %g-degree lens")
+      :format(fovDeg))
+end
+for _, shape in ipairs({ { 256, 288 }, { 512, 288 }, { 1024, 288 } }) do
+  T.check(near(infDisparity(mono, shape[1], shape[2], 1), StereoRig.K / 2, 1e-9),
+    "and at every window shape")
+end
+T.check(near(infDisparity(mono, VW, VH, 2), StereoRig.K, 1e-9),
+  "the 3D DEPTH row scales the budget linearly and nothing else does")
+
+-- ------- the sky
+--
+-- Directions have no position, so an eye's own offset cannot move them:
+-- what separates the two fans is the frustum lean alone, and it comes out
+-- at exactly the shear.
+local o = sepM / (2 * convM)
+T.check(near(eyeR.skyRay.base[1] - eyeL.skyRay.base[1], -2 * o, 1e-12),
+  "the two sky fans differ by the shear, along the camera's right")
+T.check(near(eyeR.skyRay.base[2], eyeL.skyRay.base[2], 1e-12)
+        and near(eyeR.skyRay.base[3], eyeL.skyRay.base[3], 1e-12),
+  "and by nothing vertical -- vertical parallax is the thing eyes cannot fuse")
+local sameSpan = true
+for i = 1, 3 do
+  if math.abs(eyeL.skyRay.du[i] - eyeR.skyRay.du[i]) > 1e-12 then sameSpan = false end
+  if math.abs(eyeL.skyRay.dv[i] - eyeR.skyRay.dv[i]) > 1e-12 then sameSpan = false end
+end
+T.check(sameSpan, "the fans span the same field; only their origin leans")
+
+-- and each fan round-trips its OWN projection: the direction it hands a
+-- canvas point projects back to that very point. One sign wrong anywhere
+-- here and the skybox paints sideways.
+local function rayFrac(e, u, v)
+  local rm = Mat4.mul(Mat4.mul(Mat4.scale(1, -1, 1), e.proj), e.view)
+  local sr = e.skyRay
   local d1 = sr.base[1] + u * sr.du[1] + v * sr.dv[1]
   local d2 = sr.base[2] + u * sr.du[2] + v * sr.dv[2]
   local d3 = sr.base[3] + u * sr.du[3] + v * sr.dv[3]
@@ -4292,51 +4339,83 @@ local function rayFrac(u, v)
   local ww = rm[13] * d1 + rm[14] * d2 + rm[15] * d3
   return x / ww * 0.5 + 0.5, y / ww * 0.5 + 0.5
 end
-local fu, fv = rayFrac(0.3, 0.8)
-T.check(near(fu, 0.3, 1e-4) and near(fv, 0.8, 1e-4),
-  "the sky's ray fan round-trips the eye's own projection")
-local fu2, fv2 = rayFrac(0.9, 0.1)
-T.check(near(fu2, 0.9, 1e-4) and near(fv2, 0.1, 1e-4),
-  "at every corner of the frame alike")
+for _, e in ipairs({ eyeL, eyeR }) do
+  local fu, fv = rayFrac(e, 0.3, 0.8)
+  T.check(near(fu, 0.3, 1e-4) and near(fv, 0.8, 1e-4),
+    "each eye's ray fan round-trips its own projection")
+  local fu2, fv2 = rayFrac(e, 0.9, 0.1)
+  T.check(near(fu2, 0.9, 1e-4) and near(fv2, 0.1, 1e-4),
+    "at every corner of the frame alike")
+end
 
--- ------- the hand prop: the pokedex rides the same mapping as the eyes
---
--- propMatrix carries a hand pose through worldFromXr: an identity hand at
--- the LOCAL origin lands ON the pivot, offsets scale by px-per-metre, and
--- the battle mount's yaw turns the prop with the whole mapping.
-local handPose = { pos = { 0, 0, 0 }, quat = { 0, 0, 0, 1 } }
-local pm = VRRig.propMatrix(handPose, { 500, 20, 700 }, { 0, 0, 0 }, 10)
-local hx, hy, hz = apply(pm, 0, 0, 0)
-T.check(near(hx, 500) and near(hy, 20) and near(hz, 700),
-  "an identity hand at the origin puts the prop on the pivot")
-local hx2, hy2, hz2 = apply(pm, 0.1, 0.2, 0)
-T.check(near(hx2, 501) and near(hy2, 22) and near(hz2, 700),
-  "prop-local metres scale to world pixels through the mapping")
-local pmYaw = VRRig.propMatrix(handPose, { 500, 20, 700 }, { 0, 0, 0 },
-                               10, math.pi / 2)
-local yx, yy, yz = apply(pmYaw, 0, 0, -1)
-T.check(near(yx, 490) and near(yy, 20) and near(yz, 700),
-  "the battle mount's yaw turns the prop with the mapping: local "
-  .. "forward comes out west")
+-- a tilted camera keeps the offset in the frame's own plane rather than
+-- the world's: eyes slide along the camera's right, which for a camera
+-- looking down is world north-south, not world east-west
+local tilted = {
+  eye = { 0, 200, 0 }, focus = { 0, 0, 0 }, up = { 0, 0, -1 },
+  fov = 1.0, dist = 200, near = 10, far = 4096, fan = true,
+}
+local tL, tR = StereoRig.pair(tilted, 8, 200, VW, VH, true)
+T.check(near(tL.eye[2], 200) and near(tR.eye[2], 200),
+  "a straight-down camera's eyes stay at the same height")
+T.check(math.abs(tL.eye[1] - tR.eye[1]) > 7,
+  "and separate across the frame, not along the view")
 
--- and the pokedex module holds its shape headless: no frame until VR
--- places one, placement builds a model matrix, clear() takes it away
-local Dex = run.loader.exports.DRAMATIC_SHAPE.lib.require("Pokedex")
-T.eq(Dex.frame, nil, "no session, no pokedex frame")
-Dex.place(handPose, { 500, 20, 700 }, { 0, 0, 0 }, 10)
-T.check(Dex.frame ~= nil and type(Dex.frame.model) == "table"
-        and #Dex.frame.model == 16,
-  "placing the pokedex on a hand pose builds its world model matrix")
-T.check(Dex.frame.tex == nil,
-  "and the screen stays dark until something is put on it")
-T.check(pcall(Dex.draw),
-  "drawing headless is a clean no-op -- no meshes, no crash")
-Dex.clear()
-T.eq(Dex.frame, nil, "clear() takes the device away")
-T.check(type(Dex.VOX) == "number" and Dex.VOX > 0,
-  "the voxel size is a named, tunable number")
-T.check(near(Dex.TILT, -math.pi / 2),
-  "the device lies a full quarter turn forward, flush with the controller")
+-- ------- what carries through, and what refuses
+T.eq(eyeL.eyeCenter, mono.eye,
+  "both eyes point billboards at the mono eye, so the two images show the "
+  .. "same sprite frame of the same card")
+T.eq(eyeR.eyeCenter, mono.eye, "both of them")
+T.eq(eyeL.curve, nil,
+  "the world bend is carried through untouched -- it is a function of "
+  .. "world position and lands identically in both eyes")
+T.eq(eyeL.fov, mono.fov, "and the vertical span is the mono camera's")
+local noFanL = select(1, StereoRig.pair(mono, sepM, convM, VW, VH, nil))
+T.eq(noFanL.skyRay, nil,
+  "asked for no fan, an eye brings none and the sky stays frame-hung")
+
+local zeroL, zeroR = StereoRig.pair(mono, 0, convM, VW, VH, true)
+local sameZero = true
+for i = 1, 16 do
+  if zeroL.proj[i] ~= zeroR.proj[i] then sameZero = false end
+  if zeroL.view[i] ~= zeroR.view[i] then sameZero = false end
+end
+T.check(sameZero, "no separation is no stereo at all, exactly -- not nearly")
+
+T.eq(StereoRig.pair(nil, 1, 1, VW, VH, true), nil,
+  "no description, no pair -- the caller renders mono")
+T.eq(StereoRig.pair({ eye = { 0, 0, 0 }, focus = { 0, 0, 0 }, up = { 0, 1, 0 },
+                      fov = 1, dist = 1, near = 1, far = 2 },
+                    1, 1, VW, VH, true), nil,
+  "and a camera looking nowhere has no basis to slide along")
+T.eq(StereoRig.pair({ eye = { 0, 10, 0 }, focus = { 0, 0, 0 }, up = { 0, 1, 0 },
+                      fov = 1, dist = 10, near = 1, far = 2 },
+                    1, 1, VW, VH, true), nil,
+  "nor one whose up is its own view direction")
+
+-- convergence floors: half a tile, and never inside the near plane
+local tight = { eye = { 0, 0, 0 }, focus = { 0, 0, -2 }, up = { 0, 1, 0 },
+                fov = 1, dist = 2, near = 20, far = 100, fan = true }
+local _, tightConv = StereoRig.budget(tight, VW, VH, 1, 1)
+T.check(tightConv >= 1.5 * tight.near - 1e-9,
+  "convergence never comes inside a comfortable multiple of the near plane")
+
+-- ------- easing the screen plane, in reciprocal space
+local st = StereoRig.ease(nil, 100, false)
+T.check(near(StereoRig.eased(st), 100),
+  "the first frame adopts the target outright -- there is nothing to ease from")
+st = StereoRig.ease(st, 25, true)
+T.check(near(StereoRig.eased(st), 25),
+  "and a declared cut snaps, because a cut is an edit and not a move")
+st = StereoRig.ease(st, 100, false)
+local firstStep = StereoRig.eased(st)
+T.check(firstStep > 25 and firstStep < 100, "an undeclared change eases")
+-- the point of easing in 1/conv: the FIRST step covers alpha of the
+-- perceived travel, which a plain lerp of the distance does not
+T.check(near((1 / 25 - 1 / firstStep) / (1 / 25 - 1 / 100), StereoRig.EASE, 1e-9),
+  "and it eases in disparity, which is what the eye actually measures")
+for _ = 1, 400 do st = StereoRig.ease(st, 100, false) end
+T.check(near(StereoRig.eased(st), 100, 1e-3), "settling on the target")
 
 -- the sprite lean override and the anchored sky's knobs exist, unset and
 -- set respectively, and an unstaged world offers no battle mount
@@ -4390,7 +4469,7 @@ V3D_.eye = hadEye
 
 -- the FLAT first-person rig's sky fan: a placed eye/focus camera through
 -- viewProjection carries a ray fan of its own, and it round-trips that
--- projection exactly like the VR eyes' does -- the flat 1ST sky is a
+-- projection exactly like a stereo eye's does -- the flat 1ST sky is a
 -- skybox by the same math
 local hadCam = V3D_.camera
 V3D_.camera = { eye = { 100, 13, 200 }, focus = { 130, 18, 160 },
@@ -4413,45 +4492,130 @@ T.check(near(pu, 0.25, 1e-4) and near(pv, 0.6, 1e-4),
 V3D_.camera = hadCam
 V3D_.skyRayLive = nil
 
--- ------- VR owns the battle rows while it is on
-local VRSet = run.loader.exports.DRAMATIC_SHAPE.lib.require("VR").setting
-VRSet:sync(true)
-OB_.setting:sync(false)
-OB_.backSetting:sync(true)
-T.eq(OB_.enabled(), true, "VR on forces staged battles whatever the row says")
-T.eq(OB_.backPinned(), false, "and holds back sprites off")
-VRSet:sync(false)
-T.eq(OB_.enabled(), false, "VR off hands the row back to its stored value")
-OB_.setting:sync(true)
-T.eq(OB_.backPinned(), true, "and back sprites return at theirs")
-OB_.backSetting:sync(false)
+-- ------- the 3D rows, and the ladder they live on
+local S3D = run.loader.exports.DRAMATIC_SHAPE.lib.require("Stereo3D")
+T.eq(S3D.mode.key, "stereo", "the 3D row persists under its own key")
+T.eq(S3D.mode:get(), "off", "and ships OFF")
+T.eq(S3D.enabled(), false, "with the gate agreeing")
+T.eq(S3D.engaged(), false,
+  "and engaged() is false headless whatever the row says -- no depth "
+  .. "canvas, no second viewpoint")
+T.eq(S3D.status(), "off", "and the status line says so")
 
--- and the VR row exists, shaped like every other mod setting
-local VRMod = run.loader.exports.DRAMATIC_SHAPE.lib.require("VR")
-T.eq(VRMod.setting.key, "vr", "the VR row persists under its own key")
-T.eq(VRMod.setting:get(), false, "and ships OFF")
-T.eq(VRMod.status(), "off", "with the status agreeing")
-T.check(not VRMod.active(), "no session without a runtime, and no crash")
-T.eq(type(VRMod.supported), "function",
-  "the platform gate exists -- off Windows the row is not offered at all")
-T.eq(VRMod.supported(), true,
-  "and a headless run (no love.system) counts as supported, harmlessly")
+-- the ladder is built at load, and the LEIA rung is EXISTENTIAL rather than
+-- situational: on a platform with no weaver it is not a rung that is
+-- currently unavailable, it is not a rung
+local labels = {}
+for _, l in ipairs(S3D.mode.labels) do labels[l] = true end
+T.check(labels.OFF and labels.SBS and labels["T/B"] and labels.ROW
+        and labels.COL and labels.CHECK and labels.ANAGL,
+  "every glasses-and-television format is on the ladder")
+local LeiaSR = run.loader.exports.DRAMATIC_SHAPE.lib.require("LeiaSR")
+T.eq(labels.LEIA, LeiaSR.platformOK() or nil,
+  "and LEIA exactly where a weaver could exist")
+T.eq(type(LeiaSR.platformOK), "function", "the platform gate exists")
+T.eq(LeiaSR.ready(), false, "no shim, no runtime, no weave -- and no crash")
 
--- the loader search covers every install shape: the mod-relative path
--- first, the system name last, and (with a filesystem to ask) the real
--- mount and the save directory in between
-local VRXR_ = run.loader.exports.DRAMATIC_SHAPE.lib.require("VRXR")
-local cands = VRXR_._loaderCandidates()
-T.check(#cands >= 2, "the loader has candidates to try")
-T.check(cands[1]:find("assets/vr/openxr_loader%.dll") ~= nil,
-  "the first is the mod's own path")
-T.eq(cands[#cands], "openxr_loader",
-  "and the system search path is the last resort")
-T.eq(type(VRMod.leave), "function",
-  "VR.leave stays as the programmatic door out -- no controller button "
-  .. "is wired to it")
+-- the knobs, and the defaults they ship at
+T.eq(S3D.depth:get(), 1, "3D DEPTH ships at the full budget")
+T.eq(S3D.focus:get(), 1, "3D FOCUS ships on the camera's own subject")
+T.eq(S3D.swap:get(), false, "and the eyes unswapped, which is a coin toss "
+  .. "no software can call")
+T.eq(S3D.sky:get(), true, "the anchored sky is on")
+T.eq(S3D.parity:get(), false, "and the interlace phase unshifted")
+
+-- switched on, the whole thing still declines to engage headless, and
+-- every stage is a clean pass-through rather than a crash
+S3D.mode:sync("sbs")
+T.eq(S3D.enabled(), true, "the row reads back on")
+T.eq(S3D.engaged(), false, "and still declines without a diorama to split")
+T.eq(S3D.ownsBlur(), false, "so the engine keeps its own blur stage")
+local sentinel = {}
+T.eq(S3D.worldPresent(sentinel), sentinel, "worldPresent hands the frame back")
+-- present is handed something that is not a canvas at all, which is one of
+-- the two ways the mod discovers it cannot use that stage
+T.eq(S3D.present(sentinel), sentinel,
+  "present hands back anything it cannot measure, rather than throwing")
+T.eq(S3D.present(nil), nil, "and nothing at all is not a crash either")
+T.check(pcall(S3D.endFrame),
+  "the end-of-frame pass is a clean no-op with no GL to read back")
+T.check(pcall(S3D.capture), "so is asking for the finished frame")
+T.check(pcall(S3D.release), "releasing an unborrowed camera is harmless")
+
+-- ------- one pair, one frame
+--
+-- The pair is put here by whichever pass drew it -- the free-roam world
+-- pass, or the staged battle's own update -- and a frame where NEITHER ran
+-- must not pack the last one against a picture it has nothing to do with.
+T.eq(S3D.debugEyes(), nil, "nothing held to begin with")
+T.check(pcall(S3D.hold, nil, nil, 0, 0), "and holding nothing is harmless")
+T.eq(S3D.debugEyes(), nil, "and leaves nothing held")
+
+-- and the pair-maker: one place makes eye cameras, and both callers -- the
+-- free-roam pass and the battle's placed rig -- go through it, so they
+-- cannot disagree about the depth budget
+T.eq(type(S3D.eyesFor), "function", "there is one place a pair is made")
+T.eq(S3D.eyesFor(nil, 320, 288), nil,
+  "and a camera with no description to shear yields none")
+
+S3D.mode:sync("off")
+T.check(pcall(S3D.endFrame), "and with the row off it does not even try")
+
+-- ------- the battle's own seams
+--
+-- Two of them, both the same class of bug and both invisible until a second
+-- eye exists: a pass that keeps ONE working canvas hands the second eye the
+-- first eye's, and a pass that writes into `shot.canvas` writes into
+-- whichever eye it was handed.
+local DOF = run.loader.exports.DRAMATIC_SHAPE.lib.require("BattleDOF")
+T.eq(DOF.ENABLED, false,
+  "the depth of field is off -- the mons are geometry inside the image it "
+  .. "would blur")
+T.eq(DOF.apply(nil, 0.5, 0.1, 0.3, "battleR"), nil,
+  "and it takes a slot, so two eyes cannot share one working pair")
+local OBx = run.loader.exports.DRAMATIC_SHAPE.lib.require("OverworldBattle")
+T.eq(OBx.snapHUDs(nil, nil, nil), false,
+  "the HUD snap takes an explicit target, so the second eye can have the "
+  .. "same panels at the same place -- which is what puts them on the "
+  .. "screen plane")
+T.eq(OBx.fxInWorld(), false,
+  "with no fight staged the move animations are nobody's to draw")
+
+-- ------- the depth fades through a flash rather than strobing
+--
+-- A full-screen effect -- the flash that announces an encounter above all
+-- -- is a frame with no depth to give: it covers the world, so there is
+-- nothing left to lift an interface out of and the frame comes out flat.
+-- One flat frame would not matter. A RUN of them alternating with the
+-- frames either side is a picture that snaps in and out of depth several
+-- times a second, and the eyes re-converge on every switch.
+local MONO3D = { eye = { 0, 0, 0 }, focus = { 0, 0, -300 }, up = { 0, 1, 0 },
+                 fov = 1, dist = 300, near = 15, far = 5096 }
+T.eq(S3D.fade(), 1, "at rest, all of the depth is in force")
+S3D.mode:sync("sbs")
+S3D.cut()
+for _ = 1, 12 do S3D.update(1 / 60) end
+T.check(S3D.fade() <= S3D.FADE_MIN + 1e-9,
+  "and it comes out from under a cut fast -- faster than an eye follows")
+
+-- but NOT all the way out, and the floor is load-bearing: the flash is
+-- detected by measuring the pair against the finished frame, so a pair
+-- that stopped existing would take the detector with it -- and the hold
+-- would expire in the middle of the flash it was holding for
+T.check(S3D.fade() > 0, "the fade floors rather than vanishing")
+local fL, fR = S3D.eyesFor(MONO3D, 512, 288)
+T.check(fL ~= nil and fR ~= nil,
+  "so there is still a pair to measure against, however flat it looks")
+T.check(math.abs(fL.eye[1] - fR.eye[1]) < 1,
+  "and flat is what it looks: a fraction of a pixel of separation")
+
+for _ = 1, 60 do S3D.update(1 / 60) end
+T.check(S3D.fade() > 0.99, "and it eases back once the effect has passed")
+T.eq(S3D.coverage(), nil,
+  "nothing has been measured headless -- there is no frame to measure")
+S3D.mode:sync("off")
 end
-vrRigSection()
+stereoRigSection()
 
 -- ------- the skybox's checker and glow are the sky's own, not the screen's
 --
@@ -4528,72 +4692,28 @@ vrRigSection()
   love.graphics, love.image = realGraphics, realImage
   Sky.invalidate()
 
-  -- ------- a live headset holds every menu inside the GB frame
+  -- ------- the raw-GL seam the weaver reaches through
   --
-  -- The engine's zoom-aware anchoring docks the START menu to the WINDOW's
-  -- edge; both VR screens crop the window to the GB frame, so a docked
-  -- menu is cropped away with the border it hugged. The wrap answers the
-  -- engine's own uiAnchorsHeldInStack predicate with yes while a headset
-  -- is live, which blits every menu where it was drawn -- the START
-  -- menu's slot is already flush with the frame's right edge.
-  local Game = require("src.core.Game")
-  local VRMod = run.loader.exports.DRAMATIC_SHAPE.lib.require("VR")
-  T.eq(Game.dramaticShapeAnchorHold, true,
-    "the anchor-hold wrap installed at load, once")
-  T.eq(Game.uiAnchorsHeldInStack({ states = {} }), false,
-    "with no headset the engine's own answer stands: an empty stack docks")
-  local innerActive = VRMod.active
-  VRMod.active = function() return true end
-  T.eq(Game.uiAnchorsHeldInStack({ states = {} }), true,
-    "a live headset holds anchors -- menus stay inside the GB frame, "
-    .. "which is all either VR screen shows")
-  VRMod.active = innerActive
-  T.eq(Game.uiAnchorsHeldInStack({ states = {} }), false,
-    "and hands the predicate back when the headset is gone")
-  T.eq(Game.uiAnchorsHeldInStack({ states = { { holdsUIAnchors = true } } }),
-    true, "a self-composing state still holds them on its own")
-
-  -- and the panel's route to the headset is the SCALED region blit: the
-  -- pixel-for-pixel copy ran the GB frame off a swapchain image smaller
-  -- than the window (fullscreen cut the menu), so the scaled seam must
-  -- exist for updateQuad to reach for first
-  local VRGL_ = run.loader.exports.DRAMATIC_SHAPE.lib.require("VRGL")
-  T.eq(type(VRGL_.copyFrontRegionToTexture), "function",
-    "the letterbox reaches the panel scaled, not pixel-for-pixel")
-
-  -- ------- the stick click IS the "3" key
-  --
-  -- Left stick click makes exactly the step the key (and SELECT) makes:
-  -- the very same function, handed across from main.lua, so the ladder
-  -- walk, the FULL step-over and the TILT/GBC FX clearing can never
-  -- drift. Through the same fixture the key tests lend.
-  T.eq(VRMod.cycleVoxel ~= nil, true,
-    "main.lua hands its cycleVoxel to the stick click")
-  local hadStack2, hadOw2 = Game.stack, Game.overworld
-  local hadSave2, hadWrite2 = Game.save, Game.writeOptions
-  Game.stack, Game.overworld = keyGame.stack, keyGame.overworld
-  Game.save, Game.writeOptions = keyGame.save, keyGame.writeOptions
-  Pipelines.setLevel("voxel", 0)
-  VRMod.stepView()
-  T.eq(Pipelines.levelLabel("voxel"), "15",
-    "the stick click steps the VOXEL ladder exactly as 3 does")
-  VRMod.stepView()
-  T.eq(Pipelines.levelLabel("voxel"), "35", "and keeps walking it")
-  keyGame.save.options.tilt = 2
-  require("src.render.Tilt").setLevel(2)
-  VRMod.stepView()
-  T.eq(keyGame.save.options.tilt, 0,
-    "each click clears TILT in the save, exactly as each keypress does")
-  Game.stack, Game.overworld = hadStack2, hadOw2
-  Game.save, Game.writeOptions = hadSave2, hadWrite2
-  Pipelines.setLevel("voxel", 0)
+  -- The one place this mod drops below LOVE, and the three questions it
+  -- asks there. None of them can be answered in a headless run, and all
+  -- three have to answer CLEANLY rather than throw -- because the fallback
+  -- they gate is "present the side-by-side image and say why", which only
+  -- works if nothing crashed on the way to deciding that.
+  local GLBridge = run.loader.exports.DRAMATIC_SHAPE.lib.require("GLBridge")
+  T.eq(GLBridge.load(), false, "no GL context headless, and it says so once")
+  T.check(type(GLBridge.status()) == "string" and #GLBridge.status() > 0,
+    "with a reason a status line can print")
+  T.eq(GLBridge.canvasTexture(nil), nil, "no canvas, no texture name")
+  T.check(pcall(GLBridge.hwnd), "and asking for the window is never a throw")
+  T.check(pcall(GLBridge.dpiAwareness),
+    "nor is asking what the OS thinks our pixels are")
 end)()
 
 -- ------- HORDE MODE
 --
 -- The parts that can be judged without a screen: the code detector (which
 -- reads Game Boy buttons, so this is the same test the pad, the touch
--- overlay and the VR controllers would pass), the registrations, the
+-- overlay would pass), the registrations, the
 -- gloom's arithmetic, and the flow field the crowd chases along.
 ;(function()
   local lib = run.loader.exports.DRAMATIC_SHAPE.lib
@@ -4886,14 +5006,13 @@ end)()
   T.check(one and #one == 1, "a single word always lays out on one line")
   T.eq(wrap(stub, "   ", 2, 100), nil, "and nothing but spaces lays out to nothing")
 
-  -- ------- SMOOTH TURN belongs to the headset
+  -- ------- the 3D knobs belong to the 3D row
   --
-  -- A comfort setting for a device that is not plugged in decides
-  -- nothing, so the row exists only while VR is ON -- and it is OFF by
-  -- default, because a software turn moves the world past a head that
-  -- did not move and that is how you make somebody ill in a headset.
-  local VRMod = lib.require("VR")
-  T.eq(VRMod.smoothTurn:get(), false, "SMOOTH TURN is off out of the box")
+  -- Depth, focus and eye swap all decide nothing while the mode is OFF, so
+  -- none of them is on the menu until it is on -- and stepping the mode row
+  -- therefore changes the LIST, which is why the options menu's own wrap
+  -- watches it (see main.lua).
+  local S3D2 = lib.require("Stereo3D")
 
   local function optionRows()
     local out = Runtime.call("ui.options.rows", function(_, r) return r end,
@@ -4904,18 +5023,32 @@ end)()
   end
 
   Pipelines.setLevel("voxel", 3)          -- off FULL, which owns other rows
-  VRMod.setting:sync(false)
-  T.check(not optionRows()["DRAMATIC_SHAPE:smoothturn"],
-    "with VR off the row is not on the OPTIONS menu")
+  S3D2.mode:sync("off")
+  local offRows = optionRows()
+  T.check(offRows["DRAMATIC_SHAPE:stereo"],
+    "the 3D row itself is always on the menu")
+  T.check(not offRows["DRAMATIC_SHAPE:stereodepth"],
+    "with 3D off the depth knob is not")
+  T.check(not offRows["DRAMATIC_SHAPE:stereoswap"], "nor the eye swap")
 
-  VRMod.setting:sync(true)
-  local smoothRow = optionRows()["DRAMATIC_SHAPE:smoothturn"]
-  T.check(smoothRow ~= nil, "and with VR on it is")
-  if smoothRow then
-    T.eq(smoothRow.label, "SMOOTH TURN", "under its own name")
-    T.eq(smoothRow.value(), "OFF", "reading OFF until the player says otherwise")
+  S3D2.mode:sync("anaglyph")
+  local onRows = optionRows()
+  local depthRow = onRows["DRAMATIC_SHAPE:stereodepth"]
+  T.check(depthRow ~= nil, "and with 3D on they are")
+  if depthRow then
+    T.eq(depthRow.label, "3D DEPTH", "under its own name")
+    T.eq(depthRow.value(), "100%", "at the full budget until the player says "
+      .. "otherwise")
   end
-  VRMod.setting:sync(false)
+  T.check(onRows["DRAMATIC_SHAPE:stereofocus"] and onRows["DRAMATIC_SHAPE:stereoswap"],
+    "all three of them")
+  -- and the two that are never on the menu at all, whatever the mode: they
+  -- are on the manager's page so a fault in one can be isolated, not so a
+  -- player can be asked about interlace phase
+  T.check(not onRows["DRAMATIC_SHAPE:stereosky"],
+    "the anchored sky is manager-page only")
+  T.check(not onRows["DRAMATIC_SHAPE:stereoparity"], "and so is the parity")
+  S3D2.mode:sync("off")
 
   -- ------- the gun's own bookkeeping
 

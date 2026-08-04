@@ -16,6 +16,8 @@ tests/voxel_seam_shots.lua
 tests/voxel_shadow_probe.lua
 tests/voxel_survey.lua
 tests/voxel_void_probe.lua
+tests/stereo_probe.lua
+tests/stereo_shots.lua
 
 # Authoring tools. These run by hand on a machine that has imported its own
 # ROM, read the local cache, and emit assets/voxels/*.lua; the carved models
@@ -31,3 +33,12 @@ assets/docs/buidling_to_voxel/voxel_build_verify.py
 # assets/docs/**.md stays in: data/voxel_heights.lua points a modder at the
 # building catalogue, and the methodology is where the geometry's provenance
 # is written down.
+
+# The LeiaSR shim's SOURCE, and the private SDK submodule it is built from.
+# A player installs assets/leiasr/leiasr_shim.dll, which the release workflow
+# drops in from its own Windows job; the C++ it was built from is repository
+# furniture. (git archive carries no submodule contents either way.)
+leiasr_shim/leiasr_shim.cpp
+leiasr_shim/CMakeLists.txt
+leiasr_shim/README.md
+.gitmodules

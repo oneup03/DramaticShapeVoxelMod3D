@@ -3,8 +3,9 @@
 A mod for the [Pokémon Gen 1 Recompilation
 Project](https://github.com/bryanthaboi/pokemon-gen1-recomp-project).
 
-The overworld as a voxelized 3D diorama. Also supports experimental
-first-person, third-person and VR.
+The overworld as a voxelized 3D diorama, in stereoscopic 3D if you have
+something to see it with. Also supports experimental first-person and
+third-person cameras.
 
 ## Controls
 
@@ -23,6 +24,7 @@ menu.
 | the **BACK SPRITES** options row | OFF / ON — keep your own Pokémon on the battle menu, seen from behind in its classic slot, instead of standing it on the map; the foe is still out there. Only on the menu while **3D-BTL** is on, because it decides nothing without it |
 | the **AA** options row | OFF / 2X / 4X — smooth the stair-stepped edges of the 3D world by rendering the diorama larger than the window and folding it back down. The ladder is samples per display pixel: 2X is a canvas root-two wider and taller, 4X one exactly twice the size. Every edge in the projected picture softens with the silhouettes — the tileset's own texels are quads in a perspective view and cross the pixel grid at the same arbitrary angles — so the diorama reads smoother rather than sharper. The most expensive row in the mod, so it is OFF by default and **FULL** leaves it alone |
 | the **DAYTIME** options row | SYNC / DAY / NIGHT / DUSK / DAWN / CYCLE — what time it is outdoors, on the diorama *and* on the flat 2D world; held at SYNC (and off the menu) while VOXEL is FULL |
+| the **3D** options row | OFF / SBS / T/B / ROW / COL / CHECK / ANAGL / LEIA — stereoscopic 3D, with **3D DEPTH**, **3D FOCUS** and **3D SWAP** appearing under it. See [Stereoscopic 3D](#stereoscopic-3d) |
 
 ## Free-roam cameras (1ST / 3RD)
 
@@ -80,48 +82,75 @@ on the menu while the foe stands out on the map, and no angle holds a
 composition that is half frame and half world — so with it on, the shot holds
 the one the rig was solved for.
 
-## VR
+## Stereoscopic 3D
 
-The **VR** options row (OFF / ON, off by default) drives a PCVR headset
-through OpenXR on Windows — SteamVR, Oculus or WMR.
+The **3D** options row renders the whole diorama from two viewpoints and
+packs the pair for whatever will separate them again. It is off by default,
+because it costs a second render of the world — which makes it the most
+expensive row in the mod after **AA**, and the two multiply.
 
-Both free-roam rungs put the headset in the player's *head*: a boom that
-seats its wearer three cells behind their own body is a reliable way to make
-people ill, so **3RD** in VR is **1ST** in VR. The rung still changes the
-walk and the sprites the same way.
+| rung | for |
+| --- | --- |
+| `OFF` | one viewpoint, as ever |
+| `SBS` | side by side — a 3D TV's own mode, capture, and headsets running a desktop viewer |
+| `T/B` | over and under, the same set of consumers |
+| `ROW` | row-interlaced: passive 3D televisions and projectors |
+| `COL` | column-interlaced: the passive monitors that use it |
+| `CHECK` | checkerboard: likewise |
+| `ANAGL` | red-cyan, by the Dubois matrix — a pair of paper glasses and any screen at all |
+| `LEIA` | a Leia / Simulated Reality autostereoscopic panel. No glasses |
 
-### VR controls
-
-Suggested onto Touch, Index and WMR controllers (rebindable in the
-runtime's own binding UI); pad, keyboard and mouse all keep working
-alongside.
+Three more rows appear under it while it is on.
 
 | control | does |
 | --- | --- |
-| left stick | move — grid-walks the diorama, free-walks 1ST |
-| A / B (X / Y on the left hand) | A / B |
-| either trigger | START |
-| left stick click | step the VOXEL angle ladder (same as the "3" key) |
-| right stick up / down | *diorama only* — zoom the model |
-| right stick left / right | *1ST only* — snap-turn 45°, or turn smoothly with **SMOOTH TURN** on |
-| grip squeeze + raise / lower that hand | *diorama only* — drag the table's height |
-| head | *1ST and battles* — look; FreeMove walks where you look |
-| left hand | *1ST and battles* — the Pokédex: menus, dialogs and the 2D battle screen on its screen |
+| **3D DEPTH** | how much of the budget to spend. 100% puts the far horizon 2.5% of the screen's width apart — and *holds* it there at every camera angle, every zoom rung and every window size, because the separation is solved from the budget rather than set as a distance. Up if your eyes take it happily, down for a small window or a long evening |
+| **3D FOCUS** | where the screen is. Everything nearer than the focus comes out of the display toward you and everything past it sits behind the glass, so **NEAR** pushes the diorama into the room and **FAR** sinks it into the desk. **MID** puts the screen on whatever the camera is looking at |
+| **3D SWAP** | swap the eyes. Nothing in software can ask a pair of glasses which way round its filters are, or a lenticular panel which column it starts on — and a picture with its eyes crossed still *looks* like 3D, just inside out. If it feels wrong in a way you cannot name, try this |
+
+Three things worth knowing before you blame the mod:
+
+- **Battles are in 3D too**, mons and move effects both — the effects stand
+  on a plane through the two Pokémon rather than on the glass, so a burst
+  aimed at the foe bursts at the foe's distance. The rest of the 2D screens
+  are split at zero depth: menus, dialogs, the title and a battle's own text
+  box and HUDs sit on the screen plane, which is where they belong — the row
+  is a statement about your display, and the display does not stop expecting
+  its format between one screen and the next. A full-screen flash (an
+  encounter starting, a warp fading out) dissolves the depth away and back
+  rather than dropping it for a frame at a time. This part needs Windows;
+  elsewhere the world goes 3D and the 2D screens stay flat, with the reason
+  on the console.
+- **Mark the game's `.exe` DPI-aware** if you run the display above 100%
+  scaling and you are using `ROW`, `COL`, `CHECK` or `LEIA`. Those four need
+  the mod's pixels to land one-for-one on the panel's own, and a scaled
+  display stretches the finished frame *after* every shader in it. Nothing
+  inside the process can correct that — DPI awareness is declared once, and
+  SDL declares it while LÖVE starts up, long before a mod exists — but the
+  executable can be told from outside: **right-click the .exe → Properties →
+  Compatibility → Change high DPI settings → tick "Override high DPI scaling
+  behaviour", scaling performed by "Application"**. The mod prints the same
+  advice to the console when it detects the situation.
+- **`LEIA` falls back to `SBS`** wherever the Simulated Reality runtime, an
+  SR display, or the mod's own `leiasr_shim.dll` is missing, and says which
+  on the console. If the picture is 3D but does not respond to your head
+  moving, that is a *different* failure and the console will not have caught
+  it — see [`leiasr_shim/README.md`](leiasr_shim/README.md).
 
 ## Licenses
 
 This mod is released under the **MIT License** — see [`LICENSE`](LICENSE).
 
-It redistributes one third-party binary:
+Release archives include one compiled binary of the mod's own:
+`assets/leiasr/leiasr_shim.dll`, built from
+[`leiasr_shim/`](leiasr_shim/) by this repository's release workflow and MIT
+like the rest of the mod. It statically links
+[bo3b/SR-lib](https://github.com/bo3b/SR-lib)'s wrapper around the Simulated
+Reality SDK.
 
-- **`assets/vr/openxr_loader.dll`** — the Khronos OpenXR loader
-  (version 1.0.10.2, x64, unmodified), © The Khronos Group Inc.,
-  licensed under the **Apache License 2.0**. The full license text ships
-  alongside the DLL at
-  [`assets/vr/LICENSE-openxr_loader.txt`](assets/vr/LICENSE-openxr_loader.txt),
-  as the license requires; keep the two files together if you
-  redistribute this mod. Source:
-  [KhronosGroup/OpenXR-SDK](https://github.com/KhronosGroup/OpenXR-SDK).
+The Simulated Reality **runtime** is not redistributed. It comes from the
+user's own SR installation, is shared between every SR application on the
+machine, and shipping a second copy of it is how version conflicts start.
 
 Everything else in this mod is original to it, except that the voxel
 geometry and shape profiles are derived from the tile and sprite data of

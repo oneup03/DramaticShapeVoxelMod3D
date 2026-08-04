@@ -5,3 +5,9 @@ __pycache__/
 
 # agent worktrees and local scratch
 .claude/
+
+# the LeiaSR shim's build tree; the DLL that comes out of it is CI's to ship
+leiasr_shim/build/
+
+# packed archives, whether CI made them or a local pack did
+dist/

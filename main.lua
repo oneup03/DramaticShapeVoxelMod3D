@@ -94,7 +94,8 @@ local AntiAlias = V.require("AntiAlias")
 local FirstPerson = V.require("FirstPerson")
 local FreeMove = V.require("FreeMove")
 local CamControl = V.require("CamControl")
-local VR = V.require("VR")
+local Stereo3D = V.require("Stereo3D")
+local Perf = V.require("Perf")
 -- HORDE MODE: the konami code's minigame. Horde owns the state machine and
 -- every hook; the other four are the gun, the crowd, the readout and the
 -- chip-synthesized sounds it fires. See lib/Horde.lua for the whole design.
@@ -147,7 +148,7 @@ function voidFill.check()
   voidFill.last = now
 end
 
-mod.content.render_pipelines:register("voxel", {
+local voxelRecord = {
   label = "VOXEL",
   levels = Voxel.ANGLE_LABELS,
   -- 3 is the engine's TILT key, which this mode supersedes -- see the
@@ -216,13 +217,13 @@ mod.content.render_pipelines:register("voxel", {
     -- them announces it. Ahead of the active() gate, so switching it
     -- while voxel mode is OFF still invalidates what is cached.
     voidFill.check()
-    -- The whole VR frame -- session lifecycle, xrWaitFrame's pacing, both
-    -- eye renders, the layer submit -- rides this hook, because it is the
-    -- one tick that runs through menus, dialogs and battles, which is
-    -- what a headset needs the world (or at least the UI panel) to do.
-    -- Ahead of the active() gate: with the mode off, the headset still
-    -- shows the flat screen on the floating panel.
-    VR.update(dt)
+    -- Stereo 3D's own tick: the rows, the eased screen plane, and the
+    -- watchdog that works out which of the two compose paths this engine
+    -- can actually offer. It renders nothing -- every pixel of a 3D frame
+    -- happens in drawWorld and present, on the engine's own frame. Ahead
+    -- of the active() gate because a CUT (a battle opening, a rung
+    -- changing) has to be noticed whether or not the diorama is up.
+    Stereo3D.update(dt)
     if not Voxel.active() then return end
     local Game = require("src.core.Game")
     local ow = Game and Game.overworld
@@ -234,19 +235,6 @@ mod.content.render_pipelines:register("voxel", {
   end,
 
   drawWorld = function(ctx)
-    -- the palette closure, stashed for the VR frame: it renders from the
-    -- update hook, where no ctx exists to carry one
-    VR.paletteFor = ctx.paletteFor
-    -- With a headset running, the window's world pass becomes the MIRROR
-    -- -- the left eye, fitted to the window -- rather than a third full
-    -- render of the scene. Everything else about the frame (the UI the
-    -- engine composites over this) is unchanged, which is exactly what
-    -- the headset's floating panel photographs.
-    if VR.active() then
-      local sw, sh = sceneSize(ctx)
-      local m = VR.mirror(sw, sh)
-      if m then return m end
-    end
     -- Terrain and characters are geometry; the field FX stay ordinary 2D
     -- draws composited on top, anchored through the same camera the 3D
     -- pass used (ctx.drawFx below).  The scene renders at the window's
@@ -260,23 +248,53 @@ mod.content.render_pipelines:register("voxel", {
     -- canvas it was handed, so the sky's dither, the water's march and the
     -- camera itself all come out the same picture at a higher sample rate.
     local rw, rh = AntiAlias.expand(sw, sh)
-    local canvas = VoxelScene.render(ctx.state, rw, rh,
-                                     ctx.vw, ctx.vh, ctx.paletteFor)
-    if not canvas then return nil end   -- fall back to the 2D path
+    -- the FX closures are ordinary 2D draws sized in DISPLAY pixels, and
+    -- they draw into the supersampled canvas alongside everything else --
+    -- so the scale goes up with it, or the "!" bubble lands the right
+    -- place at half the size.
+    local scale = ctx.scale * AntiAlias.factor()
+
+    -- With 3D on the same pass runs TWICE, into two cached canvases, over
+    -- one shadow map and one pose capture. The list carries the hooks that
+    -- make that possible (see Stereo3D.eyeList and VoxelScene.render); nil
+    -- is the flat path, unchanged in every particular.
+    local eyes = Stereo3D.engaged()
+                 and Stereo3D.eyeList(rw, rh, ctx, scale) or nil
+    local out = VoxelScene.render(ctx.state, rw, rh,
+                                  ctx.vw, ctx.vh, ctx.paletteFor, eyes)
+    if eyes then Stereo3D.release() end
+    if not out then return nil end      -- fall back to the 2D path
+
+    -- A PAIR. Fold each eye down to the window's size in its own slot, blur
+    -- each in its own slot (see TiltShift.force -- the engine's own blur
+    -- stage only ever sees ONE canvas and would leave the other sharp),
+    -- hand the pair to Stereo3D and give the LEFT one back. The engine
+    -- composites its UI over that exactly as it always has, and present()
+    -- picks the frame up from there.
+    if type(out) == "table" and out[1] and out[2] then
+      local L = TiltShift.force(AntiAlias.resolve(out[1], sw, sh, "eyeL"), "eyeL")
+      local R = TiltShift.force(AntiAlias.resolve(out[2], sw, sh, "eyeR"), "eyeR")
+      Stereo3D.hold(L, R, sw, sh)
+      return L
+    end
+
+    -- One canvas: the flat path, or a 3D frame whose camera had no second
+    -- viewpoint to offer this instant. Either way there is nothing to
+    -- compose, and saying so is what stops a stale pair being packed with a
+    -- fresh frame.
+    Stereo3D.hold(nil, nil, sw, sh)
+    local canvas = (type(out) == "table") and out[1] or out
+    if not canvas then return nil end
     if Voxel3D.beginOverlay() then
-      -- the FX closures are ordinary 2D draws sized in DISPLAY pixels, and
-      -- they are drawing into the supersampled canvas alongside everything
-      -- else -- so the scale goes up with it, or the "!" bubble lands the
-      -- right place at half the size.  project() already answers in canvas
-      -- pixels, so only the scale needs saying.
-      ctx.drawFx(function(wx, wy) return Voxel3D.project(wx, 0, wy) end,
-                 ctx.scale * AntiAlias.factor())
+      -- project() already answers in canvas pixels, so only the scale needs
+      -- saying
+      ctx.drawFx(function(wx, wy) return Voxel3D.project(wx, 0, wy) end, scale)
       -- the horde's readout rides the same overlay, over the FX: health,
       -- ammunition, the crosshair and the banners, sized in the same
-      -- supersampled canvas pixels everything else here is drawn in. A
-      -- headset never reaches this line (drawWorld returns the mirror
-      -- above) -- lib/VR draws the same HUD onto each eye instead.
-      HordeHud.drawFlat(rw, rh, ctx.scale * AntiAlias.factor())
+      -- supersampled canvas pixels everything else here is drawn in. (A 3D
+      -- frame draws it inside the eye loop instead, once per eye and
+      -- identically, which is what puts it on the screen plane.)
+      HordeHud.drawFlat(rw, rh, scale)
       Voxel3D.endOverlay()
     end
     -- and back to the window's own size, which is what the engine composites
@@ -284,14 +302,50 @@ mod.content.render_pipelines:register("voxel", {
     return AntiAlias.resolve(canvas, sw, sh, "world")
   end,
 
+  -- The world, packed for the display, BEFORE the engine's UI lands on it.
+  -- A pass-through unless the present stage turned out not to exist -- see
+  -- the two modes in lib/Stereo3D.
+  worldPresent = function(canvas)
+    return Stereo3D.worldPresent(canvas)
+  end,
+
+  -- And the finished frame, UI and all: the left eye IS this picture, the
+  -- right is rebuilt from it, and the two are packed for whatever is on the
+  -- desk. Also the stage whose firing is how the mod learns it exists.
+  present = function(frame)
+    return Stereo3D.present(frame)
+  end,
+
   invalidate = function()
     Voxel3D.invalidate()
     OverworldBattle.invalidate()
     AntiAlias.invalidate()
     ChunkMesher.invalidate()   -- no map id = every cached mesh
-    VR.invalidate()            -- the mirror, and FBO ids of dead canvases
+    Stereo3D.invalidate()      -- the held pair, the compose targets, the weave
   end,
-})
+}
+
+-- Registered through a LADDER rather than in one call, because two of the
+-- fields above are stages this file cannot prove the engine has. The
+-- registry validates a record's shape, and a mod that hands it a key it
+-- does not know can lose the WHOLE pipeline over it -- which would take the
+-- diorama with it, over a 3D mode nobody switched on.
+--
+-- So: ask for everything, and give back whatever is refused, most optional
+-- thing first. The mod still runs, one capability shorter, and says which
+-- one it lost. (The second detector is a watchdog on the stage actually
+-- FIRING -- a registry can accept a field it never calls. See Stereo3D.)
+do
+  local reg = mod.content.render_pipelines
+  if not pcall(reg.register, reg, "voxel", voxelRecord) then
+    voxelRecord.present = nil
+    Stereo3D.noPresentStage("the registry refused a present stage")
+    if not pcall(reg.register, reg, "voxel", voxelRecord) then
+      voxelRecord.worldPresent = nil
+      reg:register("voxel", voxelRecord)
+    end
+  end
+end
 
 mod.content.render_pipelines:register("tiltshift", {
   label = "T-SHIFT",
@@ -416,14 +470,10 @@ local SETTINGS = {
     .. "fraction of the cost." },
   -- `full` marks a row FULL does not take away. FULL owns the diorama's own
   -- knobs; what a battle is drawn over, and how it is framed, are not that.
-  -- Off the OPTIONS menu while VR is on: the headset REQUIRES staged
-  -- battles (OverworldBattle.enabled answers true regardless of this row)
-  -- and forbids back sprites (backPinned answers false), so both rows
-  -- decide nothing there and a dead switch on the menu reads as broken.
   { OverworldBattle.setting,
     "Fight on the map: the battle draws over the nearest clear ground, "
     .. "shot over the shoulder with a slow parallax drift.",
-    when = function() return not VR.enabled() end, full = true },
+    full = true },
   -- Only offered while a fight can actually be staged on the map: with 3D-BTL
   -- off the engine draws the classic screen, which is this row's ON already,
   -- and a row that no longer decides anything is worse than no row.
@@ -431,8 +481,7 @@ local SETTINGS = {
     "Keep your own Pokemon on the battle menu, seen from behind in its "
     .. "original slot, instead of standing it on the map facing the foe. "
     .. "The foe is still out there on its own tile.",
-    when = function() return stagedBattles() and not VR.enabled() end,
-    full = true },
+    when = function() return stagedBattles() end, full = true },
   { DayNight.setting,
     "What time it is outdoors: pin the sky to DAY, NIGHT, DUSK or DAWN, "
     .. "let CYCLE run it -- ten minutes of sun, ten of moon, with the "
@@ -454,39 +503,71 @@ local SETTINGS = {
     .. "expensive row in the mod.",
     full = true },
   -- `full` for the same reason as AA: not a knob on the look, a question
-  -- about the hardware on the desk.
-  { VR.setting,
-    "PCVR through OpenXR (SteamVR, Oculus, WMR). The diorama becomes a "
-    .. "tabletop model your head moves around; the 1ST rung stands you "
-    .. "inside the world at life size, looking where the headset looks. "
-    .. "Menus and dialogs float on a panel. Needs a Windows OpenXR runtime "
-    .. "and the mod running from a real folder; without them the row stays "
-    .. "and the game stays flat, with the reason on the console.",
-    -- on Windows the row stays even when a runtime is missing (the console
-    -- says why); off Windows -- mobile above all -- there is no VR to have
-    -- and the row does not exist
-    when = function() return VR.supported() end, full = true },
-  -- Under the VR row and only while it is ON: a comfort setting for a
-  -- device that is not plugged in decides nothing, and this one is read
-  -- exclusively by the headset's right stick.
-  { VR.smoothTurn,
-    "Turn smoothly with the right stick instead of snapping 45 degrees a "
-    .. "flick. OFF by default, and deliberately: a software turn moves the "
-    .. "world past a head that did not move, which is the most reliable way "
-    .. "to make somebody ill in a headset. Turn it on if you have your sea "
-    .. "legs and want the continuity.",
-    when = function() return VR.enabled() end, full = true },
+  -- about the hardware on the desk. And like AA it costs a second full
+  -- render of the diorama, which makes it the second most expensive row
+  -- in the mod.
+  { Stereo3D.mode,
+    "Stereoscopic 3D: the diorama rendered from two viewpoints and packed "
+    .. "for whatever will separate them again. SBS and T/B are side by "
+    .. "side and over/under, for a 3D TV's own modes, for capture, and for "
+    .. "a headset running a desktop viewer. ROW is the row-interlaced "
+    .. "format passive 3D televisions and projectors take; COL and CHECK "
+    .. "are the column-interlaced and checkerboard ones some passive "
+    .. "monitors use. ANAGL is red-cyan, for a pair of paper glasses and "
+    .. "any screen at all. LEIA drives a Leia / Simulated Reality "
+    .. "autostereoscopic panel, which needs no glasses -- and falls back "
+    .. "to SBS, with the reason on the console, wherever the runtime or "
+    .. "the display is missing. Costs a second render of the world.",
+    full = true },
+  -- Under the 3D row and only while it is on: knobs for a display that is
+  -- not switched on decide nothing, and a dead switch reads as broken.
+  { Stereo3D.depth,
+    "How much depth. 100% puts the far horizon two and a half per cent of "
+    .. "the screen's width apart, which is a conservative figure for a "
+    .. "seated viewer at a desk -- and it stays that at every camera "
+    .. "angle, zoom and window size, because the separation is solved from "
+    .. "the budget rather than set as a distance. Go up if your eyes take "
+    .. "it happily, down for a small window or a long session.",
+    when = function() return Stereo3D.enabled() end, full = true },
+  { Stereo3D.focus,
+    "Where the screen is. Everything nearer than the focus comes out of "
+    .. "the display toward you and everything past it sits behind the "
+    .. "glass, so NEAR pushes the whole diorama out into the room and FAR "
+    .. "sinks it into the desk. MID puts the screen on whatever the camera "
+    .. "is actually looking at, which is the safe answer and the default.",
+    when = function() return Stereo3D.enabled() end, full = true },
+  { Stereo3D.swap,
+    "Swap the eyes. Nothing in software can ask a pair of glasses which "
+    .. "way round its filters are, or a lenticular panel which column it "
+    .. "starts on -- and a picture with its eyes crossed still looks like "
+    .. "3D, just inside out: near things read as far and the whole scene "
+    .. "sits uncomfortably behind the screen. If it looks wrong in a way "
+    .. "you cannot name, try this.",
+    when = function() return Stereo3D.enabled() end, full = true },
+  -- Manager-page only. Neither is a choice a player should be asked to
+  -- make on a menu; both exist so that a fault in one can be isolated
+  -- without a rebuild.
+  { Stereo3D.sky,
+    "Give the diorama's sky real depth while 3D is on. The classic sky is "
+    .. "painted onto the FRAME, which puts it in exactly the same place in "
+    .. "both eyes -- on the screen -- with ground disappearing behind "
+    .. "something that is in front of it. On leave this ON.",
+    when = function() return false end, full = true },
+  { Stereo3D.parity,
+    "Shift the interlaced and checkerboard patterns by one pixel. This is "
+    .. "a different question from 3D SWAP and has a different symptom: "
+    .. "swapped eyes give you depth that is inside out, wrong parity gives "
+    .. "you no depth at all and a fine shimmer over the picture.",
+    when = function() return false end, full = true },
 }
 
+-- The manager's page carries every row, including the two the OPTIONS menu
+-- never shows: `when` gates are situational (a row hidden for now, because
+-- what it decides is not on the table) and have nothing to say about
+-- whether a setting exists.
 local schema = {}
 for _, entry in ipairs(SETTINGS) do
-  -- the VR rows are absent from the mod manager's page too where the
-  -- platform cannot do VR at all -- the OPTIONS menu's `when` gates are
-  -- situational (a row hidden for now), this one is existential
-  local vrOnly = entry[1] == VR.setting or entry[1] == VR.smoothTurn
-  if not vrOnly or VR.supported() then
-    schema[#schema + 1] = entry[1]:schema(entry[2])
-  end
+  schema[#schema + 1] = entry[1]:schema(entry[2])
 end
 mod.options:define(schema)
 
@@ -541,8 +622,8 @@ local function cycleVoxel(game)
   local Pipelines = require("src.render.Pipelines")
   -- HORDE MODE holds the rung at 1ST for as long as it runs. Refused HERE
   -- rather than at each caller because this one function IS every way a
-  -- player can step the ladder: the "3" key, the pad's SELECT, and the VR
-  -- left-stick click all come through it.
+  -- player can step the ladder: the "3" key and the pad's SELECT both come
+  -- through it.
   if Horde.viewLocked() then return false end
   local top = game.stack and game.stack:top()
   if not Pipelines.canToggle("voxel", top, game.overworld) then return false end
@@ -558,13 +639,13 @@ local function cycleVoxel(game)
   require("src.render.GBCFX").setLevel(0)
   require("src.render.Tilt").setLevel(game.save.options.tilt or 0)
   game:writeOptions()
+  -- a rung change is a CUT, not a camera move: the diorama's screen plane
+  -- and first person's are three hundred world pixels apart, and easing
+  -- between them after a hard change of shot reads as the picture slowly
+  -- swelling for no reason. See StereoRig.ease.
+  Stereo3D.cut()
   return true
 end
-
--- The VR stick click makes this same step (VR.stepView): the function is
--- a local of this file, so the handoff is explicit rather than a
--- reimplementation drifting out of date in lib/VR.lua.
-VR.cycleVoxel = cycleVoxel
 
 do
   local Game = require("src.core.Game")
@@ -908,16 +989,16 @@ do
     function OptionsMenu:update(dt)
       local before = Pipelines.level("voxel")
       local hadBattles = OverworldBattle.enabled()
-      -- the VR row hides the two battle rows while it is on, so stepping
-      -- it changes the LIST exactly the way 3D-BTL does
-      local hadVR = VR.enabled()
+      -- the 3D row brings three more rows with it when it leaves OFF, so
+      -- stepping it changes the LIST exactly the way 3D-BTL does
+      local had3D = Stereo3D.enabled()
       local wasOn = idAt(self, self.index)
       inner(self, dt)
       local after = Pipelines.level("voxel")
       local crossedFull = after ~= before
                           and (Voxel.isFull(before) or Voxel.isFull(after))
       if crossedFull or OverworldBattle.enabled() ~= hadBattles
-         or VR.enabled() ~= hadVR then
+         or Stereo3D.enabled() ~= had3D then
         local rebuilt = OptionsMenu.new(self.game)
         self.rows = rebuilt.rows
         -- Follow the row the cursor was ON rather than the slot it was in:
@@ -1019,34 +1100,9 @@ end
 -- Installed last of the input seams so its handleInput reasoning sits
 -- outside FreeMove's and SELECT's. The detector itself does not live on
 -- handleInput at all -- it reads the fixed step's own press queue, which
--- is where keyboard, pad, touch and the VR controllers have all already
--- become the same eight buttons. See lib/Horde.lua.
+-- is where keyboard, pad and touch have all already become the same eight
+-- buttons. See lib/Horde.lua.
 Horde.install()
-
--- ------- edge-anchored menus stay in the GB frame while a headset is live
---
--- The engine's zoom-aware anchoring (Renderer:setUIAnchor) docks the START
--- menu to the WINDOW's top-right edge. Both VR screens -- the floating
--- panel and the Pokedex -- crop the window to the GB frame, so a menu at
--- the window's edge is cropped away with the border it docked to. The
--- engine's own answer to "a state composes its screen, keep every element
--- inside it" is uiAnchorHold, computed per frame from this predicate; a
--- live headset is exactly that situation for the WHOLE window, so the
--- predicate answers yes for as long as one is. Held menus blit where they
--- were drawn in the 160x144 canvas -- the START menu's 9,0 x 11 slot is
--- already flush with the frame's right edge, which is the right edge of
--- what the headset sees. Off-headset frames fall through untouched.
-do
-  local Game = require("src.core.Game")
-  if not Game.dramaticShapeAnchorHold then
-    local inner = Game.uiAnchorsHeldInStack
-    function Game.uiAnchorsHeldInStack(stack)
-      if VR.active() then return true end
-      return inner(stack)
-    end
-    Game.dramaticShapeAnchorHold = true
-  end
-end
 
 -- The overworld's own pushBattle is the choke point for a wild encounter or
 -- a trainer, and it is wrapped. A battle that arrives some other way -- a
@@ -1149,7 +1205,54 @@ mod.hooks:wrap("world.tod", function(next, tod, ctx)
   return DayNight.tod()
 end)
 
-mod.exports.version = "1.5.5"
+-- ------- the last thing in the frame, and the last thing in the session
+--
+-- Two things have to happen after EVERY other pass in the frame, and a
+-- render pipeline's stages cannot do either, because those only run on a
+-- frame where a pipeline drew the world:
+--
+--   the screens with NO world in them -- the title, the main menu, the mod
+--   manager, a save being loaded, the flat 2D overworld with the diorama
+--   off -- still have to be laid out for the display. A side-by-side
+--   monitor is de-interleaving the whole window whatever is on it, and a
+--   menu drawn full width across two half-width eyes is not a menu.
+--
+--   the SR weave has to land on the BACK BUFFER, last, one shader pixel to
+--   one physical lens pixel (see lib/LeiaSR).
+--
+-- So this wraps love.draw -- the same one-shot guarded wrap this file uses
+-- for Game.keypressed and the options menu, and for the same reason: it is
+-- the only seam there is.
+--
+-- love.quit for the other end of it: the SR runtime holds GL resources
+-- keyed to this context, and letting the context go while it still has
+-- them is a crash on the NEXT launch rather than this one.
+do
+  if type(love) == "table" and not love.dramaticShapeStereoHooks then
+    if type(love.draw) == "function" then
+      local innerDraw = love.draw
+      love.draw = function(...)
+        innerDraw(...)
+        pcall(Stereo3D.endFrame)
+        -- and the frame's own stamp, which is the only number the player
+        -- actually experiences. lib/Perf has kept a ring for it since it was
+        -- written and nothing had ever filled it, because until this wrap
+        -- existed the mod had nowhere that ran at the END of every frame.
+        -- Free when the instrumentation is dark, which is always unless a
+        -- run asks for it.
+        Perf.frame()
+      end
+    end
+    local innerQuit = love.quit
+    love.quit = function(...)
+      pcall(Stereo3D.shutdown)
+      if type(innerQuit) == "function" then return innerQuit(...) end
+    end
+    love.dramaticShapeStereoHooks = true
+  end
+end
+
+mod.exports.version = "1.7.0"
 -- exposed so a companion mod can pin its own tiles' shapes or read the
 -- camera without reaching into this mod's file layout
 mod.exports.lib = V

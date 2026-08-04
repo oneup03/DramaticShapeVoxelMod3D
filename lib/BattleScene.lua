@@ -38,6 +38,7 @@ local ShadowMap = V.require("ShadowMap")
 local ChunkMesher = V.require("ChunkMesher")
 local TerrainAtlas = V.require("TerrainAtlas")
 local VoxelScene = V.require("VoxelScene")
+local Stereo3D = V.require("Stereo3D")
 local BattleCam = V.require("BattleCam")
 local BattleBillboard = V.require("BattleBillboard")
 local VoxelGrid = V.require("VoxelGrid")
@@ -184,7 +185,7 @@ local function monMatrix(tex, x, groundY, z, mirror)
   local h = BattleScene.GB_H * k
   local ox = -((tex.ax / BattleScene.GB_W) - 0.5) * w
   local oy = -((BattleScene.GB_H - tex.ay) / BattleScene.GB_H) * h
-  local yaw = BattleBillboard.yawToward(x, z, Voxel3D.eye)
+  local yaw = BattleBillboard.yawToward(x, z, Voxel3D.eyeCenter or Voxel3D.eye)
   local card = Mat4.mul(Mat4.translate(ox, oy, 0), Mat4.scale(w, h, 1))
   if mirror then card = Mat4.mul(Mat4.scale(-1, 1, 1), card) end
   return Mat4.mul(Mat4.mul(Mat4.translate(x, groundY, z), Mat4.rotateY(yaw)),
@@ -426,7 +427,11 @@ local function tickTiles()
   pcall(require("src.render.TileRenderer").tick)
 end
 
-function BattleScene.render(state, arena, textures, token)
+-- `fx` is the move-animation layer standing IN THE WORLD rather than on the
+-- glass: { tex = <GB-sized canvas>, anchors = <the authored slot marks> }.
+-- See the note where it is drawn, and OverworldBattle.animTexture, which
+-- catches the engine's own layer on a canvas for it.
+function BattleScene.render(state, arena, textures, token, fx)
   if not (state and state.map and arena) then return nil end
   if not Voxel3D.available() then return nil end
   tickTiles()
@@ -511,11 +516,36 @@ function BattleScene.render(state, arena, textures, token)
   -- through the override so the player's own row is never written to.
   local gridWas = VoxelGrid.override
   VoxelGrid.override = true
+  -- ------- the eyes
+  --
+  -- A staged fight is a placed camera like any other, so it splits like any
+  -- other: the description goes to Stereo3D, which shears it into two by
+  -- this frame's rows and this frame's eased screen plane. nil is the flat
+  -- path and is what every frame gets with the 3D row off.
+  --
+  -- Only the SCENE splits. The pic textures, the sun's cast, the tile tick
+  -- and the mesh bookkeeping above all ran once and are shared -- which is
+  -- what makes a 3D battle cost a second scene pass rather than a second
+  -- frame, and is also what keeps the two eyes from disagreeing about
+  -- anything except where they are standing.
+  local eyeL, eyeR = nil, nil
+  if Stereo3D.engaged() then
+    eyeL, eyeR = Stereo3D.eyesFor(Voxel3D.monoCamera(cx, cy, vw, vh), vw, vh)
+  end
+  local passes = eyeL and { { eyeL, "battle" }, { eyeR, "battleR" } }
+                       or { { cam, "battle" } }
+
   local out = nil
   local ok, err = pcall(function()
+   local canvases, vpL = {}, nil
+   for pass, spec in ipairs(passes) do
+    Voxel3D.camera = spec[1]
     -- its own canvas slot: this renders at the window's pixel size and the
     -- free-roam pass does too, but the two are alive at different moments
-    -- and a shared slot would reallocate on every battle entry and exit
+    -- and a shared slot would reallocate on every battle entry and exit.
+    -- The second eye gets a slot of its own for the same reason and one
+    -- sharper: endScene hands back the SLOT canvas rather than a copy, so
+    -- two passes into one slot is one picture drawn twice.
     --
     -- AA, if the row asks for it, renders it larger still and folds it back
     -- to pw x ph below (see AntiAlias). The framing is untouched by that:
@@ -525,7 +555,7 @@ function BattleScene.render(state, arena, textures, token)
     -- pw and ph, and why the HUDs and the depth of field, drawn onto the
     -- folded canvas afterwards, stay the chunky GB art they are.
     local rw, rh = AntiAlias.expand(pw, ph)
-    if not Voxel3D.beginScene(rw, rh, cx, cy, vw, vh, sky, "battle") then
+    if not Voxel3D.beginScene(rw, rh, cx, cy, vw, vh, sky, spec[2]) then
       return
     end
     Voxel3D.draw(terrain, atlasFor(host), nil)
@@ -577,8 +607,34 @@ function BattleScene.render(state, arena, textures, token)
       Voxel3D.draw(BattleBillboard.mesh(), card.tex, card.model,
                    BattleBillboard.PULL, ShadowMap.snug(card.model))
     end
-    Voxel3D.glass(true)
-    Voxel3D.seams(true)
+    -- THE MOVE ANIMATIONS, on a plane through both cells.
+    --
+    -- On the flat screen these ride the GB frame, translated and scaled to
+    -- follow where the pair went (see OverworldBattle's drawAnimLayer wrap).
+    -- That is right for one viewpoint and cannot be right for two: a layer
+    -- has ONE depth, and an animation reaches across both mons -- one of
+    -- them nearer than the screen and one further. Pasted on the glass it
+    -- reads as exactly that, a decal over a fight happening behind it.
+    --
+    -- So in 3D it stops being a layer. fxCard solves the plane on which the
+    -- authored slot marks land on the two cells, billboarded to whichever
+    -- eye is asking, and the effects go into the scene as geometry: a burst
+    -- authored at the foe's slot bursts at the foe's DISTANCE, and the beam
+    -- between them runs through the space between them.
+    --
+    -- Depth-tested like everything else, with the cards' own camera-ward
+    -- pull, so an effect behind a tree is behind the tree.
+    if fx and fx.tex and fx.anchors then
+      local fxModel = BattleScene.fxCard(arena, groundY, fx.anchors)
+      if fxModel then
+        Voxel3D.seams(false)
+        Voxel3D.glass(false)
+        Voxel3D.draw(BattleBillboard.mesh(), fx.tex, fxModel,
+                     BattleBillboard.PULL)
+        Voxel3D.glass(true)
+        Voxel3D.seams(true)
+      end
+    end
     if flashing then Voxel3D.flatten(nil) end
     -- grass and flowers ride the same camera-ward pull the free-roam pass
     -- gives them, measured against THIS camera's pitch rather than the
@@ -598,10 +654,24 @@ function BattleScene.render(state, arena, textures, token)
                    Mat4.translate(nb.ox, 0, nb.oy), fpull,
                    ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
     end
-    local canvas = AntiAlias.resolve(Voxel3D.endScene(), pw, ph, "battle")
-    if not canvas then return end
+    canvases[pass] = AntiAlias.resolve(Voxel3D.endScene(), pw, ph, spec[2])
+    if not canvases[pass] then return end
+    -- taken INSIDE the loop, because Voxel3D.vp is whichever eye drew last
+    -- and every pin below has to come off the same one the canvas at
+    -- canvases[1] was drawn with
+    if pass == 1 then vpL = Voxel3D.vp end
+   end
 
-    local vp = Voxel3D.vp
+    local canvas = canvases[1]
+
+    -- The pins are the LEFT eye's, and deliberately so. Everything they
+    -- place -- the depth-of-field band, the frosted panels, the animation
+    -- layer's offset -- is screen furniture drawn once into the GB canvas
+    -- the engine composites over BOTH eyes, so a second set would be a
+    -- second answer to a question that has one. (The mons move between the
+    -- eyes because they are geometry, which is the whole point; the box
+    -- their names are in does not, which is also the point.)
+    local vp = vpL
     local pmx, pmy = BattleScene.toGB(vp, arena.player[1], groundY,
                                       arena.player[2], lx, ly, s, pw, ph)
     local emx, emy = BattleScene.toGB(vp, arena.enemy[1], groundY,
@@ -622,6 +692,9 @@ function BattleScene.render(state, arena, textures, token)
     if not (pl and pr and el and er) then return end
     out = {
       canvas = canvas,
+      -- the second eye, or nil on a flat frame. Read by OverworldBattle,
+      -- which hands the pair to Stereo3D; nothing else looks at it.
+      canvasR = canvases[2],
       player = { pmx, pmy },
       enemy = { emx, emy },
       playerSpan = math.abs(pr - pl),

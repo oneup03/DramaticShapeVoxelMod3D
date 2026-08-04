@@ -83,7 +83,6 @@ local SHADER = [[
 ]]
 
 local shader = nil            -- nil = untried, false = unavailable
-local ping, pong, cw, ch = nil, nil, 0, 0
 
 local function getShader()
   if shader == nil then
@@ -96,8 +95,18 @@ end
 -- Its own pair of canvases rather than the tilt-shift pass's: those are
 -- sized to the window and this is sized to the GB frame, and sharing them
 -- would reallocate both every time a battle started or ended.
-local function getCanvases(w, h)
-  if not ping or cw ~= w or ch ~= h then
+--
+-- And one pair PER SLOT, for the reason the tilt-shift pass keyed its own:
+-- a 3D battle blurs two canvases of the same size in the same frame, and a
+-- single pair would hand the second eye the first eye's working canvas --
+-- one eye blurred twice and the other not at all, in a pair that then has
+-- nothing left to fuse.
+local pairs_ = {}
+
+local function getCanvases(w, h, slot)
+  slot = slot or "battle"
+  local p = pairs_[slot]
+  if not (p and p.w == w and p.h == h) then
     local ok, a = pcall(love.graphics.newCanvas, w, h)
     if not ok then return nil end
     local okB, b = pcall(love.graphics.newCanvas, w, h)
@@ -105,9 +114,14 @@ local function getCanvases(w, h)
     -- the gaussian's fractional tap offsets need linear filtering
     a:setFilter("linear", "linear")
     b:setFilter("linear", "linear")
-    ping, pong, cw, ch = a, b, w, h
+    if p then
+      if p.a and p.a.release then pcall(p.a.release, p.a) end
+      if p.b and p.b.release then pcall(p.b.release, p.b) end
+    end
+    p = { a = a, b = b, w = w, h = h }
+    pairs_[slot] = p
   end
-  return ping, pong
+  return p.a, p.b
 end
 
 -- The sharp band for a shot whose two ground marks land at canvas rows
@@ -130,12 +144,12 @@ end
 -- when it cannot run (headless, no shader support) -- so the caller always
 -- has something to composite. `focusY`, `band` and `range` are in canvas uv;
 -- omit them for the fixed fallback band.
-function BattleDOF.apply(canvas, focusY, band, range)
+function BattleDOF.apply(canvas, focusY, band, range, slot)
   if not (canvas and BattleDOF.ENABLED) then return canvas end
   local sh = getShader()
   if not sh then return canvas end
   local w, h = canvas:getDimensions()
-  local a, b = getCanvases(w, h)
+  local a, b = getCanvases(w, h, slot)
   if not a then return canvas end
   focusY = focusY or BattleDOF.FOCUS_Y
   band = band or BattleDOF.BAND
@@ -181,7 +195,11 @@ end
 
 -- Drop the GPU objects (window resize, hot reload).
 function BattleDOF.invalidate()
-  ping, pong, cw, ch = nil, nil, 0, 0
+  for slot, p in pairs(pairs_) do
+    if p.a and p.a.release then pcall(p.a.release, p.a) end
+    if p.b and p.b.release then pcall(p.b.release, p.b) end
+    pairs_[slot] = nil
+  end
 end
 
 return BattleDOF

@@ -30,12 +30,26 @@ local function modId()
   return (mod and mod.id) or "DRAMATIC_SHAPE"
 end
 
--- `values` are the stored values in ladder order and `labels` what the row
--- shows for each; values[1] is the default, and the one an unreadable or
--- unrecognised stored value falls back to.
-function ModSetting.new(key, label, values, labels)
+-- `values` are the stored values in LADDER order and `labels` what the row
+-- shows for each. `default` is the value the setting ships at and the one an
+-- unreadable or unrecognised stored value falls back to; omitted, it is
+-- values[1], which is what every ladder whose first rung IS its default
+-- (OFF, mostly) wants.
+--
+-- The two are separable because they answer different questions. A ladder's
+-- order is how it reads when you step through it -- 50, 75, 100, 150 up to
+-- 300 per cent -- and a ramp that starts in the middle so that its default
+-- can be first reads as a fault. Where the two agree, say it once.
+function ModSetting.new(key, label, values, labels, default)
+  local fallback = 1
+  if default ~= nil then
+    for i, v in ipairs(values) do
+      if v == default then fallback = i break end
+    end
+  end
   return setmetatable({
     key = key, label = label, values = values, labels = labels,
+    fallback = fallback,
     index = nil,          -- nil = not yet read back from the persisted options
   }, ModSetting)
 end
@@ -44,7 +58,7 @@ local function indexOf(self, value)
   for i, v in ipairs(self.values) do
     if v == value then return i end
   end
-  return 1
+  return self.fallback or 1
 end
 
 -- What the player left it at last session. Read lazily rather than at load
@@ -121,12 +135,13 @@ end
 function ModSetting:schema(help)
   local choices = {}
   for i, v in ipairs(self.values) do choices[i] = { self.labels[i], v } end
+  local default = self.values[self.fallback or 1]
   if #self.values == 2 and self.values[1] == false then
     return { key = self.key, type = "toggle", label = self.label,
-             default = self.values[1], help = help }
+             default = default, help = help }
   end
   return { key = self.key, type = "choice", label = self.label,
-           choices = choices, default = self.values[1], help = help }
+           choices = choices, default = default, help = help }
 end
 
 return ModSetting
