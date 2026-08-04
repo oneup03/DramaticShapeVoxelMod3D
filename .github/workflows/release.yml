@@ -1,7 +1,18 @@
 name: Release
 
-# Packs the mod into an installable .zip and publishes it as a GitHub Release,
-# once per push to main.
+# Packs the mod into an installable .zip. What happens to it depends on where
+# the push landed:
+#
+#   any branch            the archive and the shim come back as run artifacts,
+#                         and nothing is published. This is how you find out
+#                         whether the Windows half compiles before merging it.
+#   the default branch    plus a ROLLING `latest` pre-release, replaced every
+#                         push, so there is always one URL holding a current
+#                         test build.
+#   workflow_dispatch     a real, versioned vX.Y.Z release (see Versioning).
+#
+# The rolling release is a PRE-RELEASE and deliberately: it is whatever was on
+# the branch twenty minutes ago, not something anybody chose to ship.
 #
 # Archive layout: every mod file at the archive root, manifest.json included.
 # That is one of the two shapes the game accepts on MODS > Import mod .zip
@@ -9,7 +20,10 @@ name: Release
 # single top-level folder). Nothing else is added, so the archive stays
 # installable by hand too.
 #
-# Versioning, first rule that applies wins:
+# Versioning applies to the versioned release only -- a rolling build is
+# stamped with manifest.json's own version and nothing else, because bumping
+# a version is a decision and pushing a commit is not. First rule that
+# applies wins:
 #   1. the "version" input of a manual run,
 #   2. "[release X.Y.Z]" anywhere in the commit message,
 #   3. manifest.json's own version, when it is ahead of every existing tag,
@@ -24,7 +38,7 @@ name: Release
 
 on:
   push:
-    branches: [master]
+    branches: ['**']
     paths-ignore:
       - '.github/**'
       - '**.md'
@@ -38,8 +52,17 @@ on:
 permissions:
   contents: write
 
+# Per REF, not global. One group for the whole workflow meant a branch build
+# queued behind a release and behind every other branch; the only runs that
+# genuinely must not overlap are two of the same ref.
+#
+# And NOT cancel-in-progress, which is the usual choice for a rolling build
+# and is wrong here: the rolling release is published by deleting `latest`
+# and recreating it, and a run cancelled inside that window leaves the
+# repository with no `latest` at all. Two pushes in a minute cost a queued
+# job; a cancelled one costs the download link.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -137,12 +160,27 @@ jobs:
           path: leiasr_shim/build/Release/leiasr_shim.dll
           if-no-files-found: error
 
+  # Packs the archive on every branch; what gets published is the two flags
+  # below and nothing else decides it.
+  #
+  # The branch is asked for by NAME rather than hardcoded, and that is a fix
+  # rather than a flourish: this workflow shipped naming `master`, there has
+  # never been a `master` in this repository -- the default is `dev` -- and so
+  # the push trigger had never once fired in its life. Every release to date
+  # came from somebody running it by hand. Reading the default branch off the
+  # event cannot drift that way again.
   release:
     runs-on: ubuntu-latest
     # the shim is optional payload, never a gate: always() runs this job
     # whether the Windows one succeeded, failed or was skipped outright
     needs: shim
     if: always()
+    env:
+      # a rolling test build: the default branch moved
+      ROLLING: ${{ github.event_name == 'push'
+                   && github.ref_name == github.event.repository.default_branch }}
+      # and a real release: somebody asked for one, by hand, on purpose
+      VERSIONED: ${{ github.event_name == 'workflow_dispatch' }}
 
     steps:
       - name: Checkout
@@ -180,12 +218,27 @@ jobs:
           )
           latest = released[-1] if released else None
 
+          manifest_ver_parsed = parse(manifest_version)
+
+          # A rolling build is not a release and does not get to invent a
+          # version number. It ships manifest.json's own, untouched -- which
+          # is also what the archive already says inside, so nothing has to
+          # be rewritten and nothing can disagree.
+          if os.environ.get("VERSIONED") != "true":
+              if not manifest_ver_parsed:
+                  die("manifest.json version %r is not X.Y.Z" % manifest_version)
+              print("Rolling build at manifest version %s." % manifest_version,
+                    file=sys.stderr)
+              print("version=%s" % manifest_version)
+              print("tag=latest")
+              raise SystemExit(0)
+
           override = os.environ.get("DISPATCH_VERSION", "").strip()
           if not override:
               found = re.search(r"\[release\s+(\d+\.\d+\.\d+)\]", sh("git", "log", "-1", "--pretty=%B"))
               override = found.group(1) if found else ""
 
-          manifest_ver = parse(manifest_version)
+          manifest_ver = manifest_ver_parsed
           if override:
               version = parse(override) or die(f"invalid version override {override!r} (expected X.Y.Z)")
               source = "the override"
@@ -210,6 +263,7 @@ jobs:
           PY
 
       - name: Refuse to clobber an existing release
+        if: env.VERSIONED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ver.outputs.tag }}
@@ -292,7 +346,66 @@ jobs:
           (cd "$out" && sha256sum "${MOD_ID}"-*.zip > sha256sums.txt)
           cat "$out/sha256sums.txt"
 
+      # Every run, publishing or not: a branch build is only useful if you can
+      # download what it built. Retained briefly, because these are test
+      # builds rather than releases.
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-${{ steps.ver.outputs.version }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      # ROLLING: one tag, one pre-release, replaced in place every push to the
+      # default branch, so there is always exactly one URL holding a current
+      # build and it never accumulates.
+      #
+      # Deleted and recreated rather than edited, and `--cleanup-tag` with it:
+      # a release whose tag still points at last week's commit is worse than
+      # no release, because the source link lies about what the zip contains.
+      # The `|| true` is the first run, where there is nothing to delete.
+      - name: Publish the rolling build
+        if: env.ROLLING == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          MOD_ID: "DRAMATIC_SHAPE"
+        run: |
+          set -euo pipefail
+
+          shim="present"
+          if ! unzip -l "dist/${MOD_ID}-${VERSION}.zip" | grep -q 'leiasr_shim\.dll'; then
+            shim="ABSENT -- the LEIA rung will fall back to side by side"
+          fi
+
+          cat > /tmp/notes.md <<EOF
+          The latest build of \`${GITHUB_REF_NAME}\`, replaced on every push. This
+          is a test build rather than a release: it is whatever was on the
+          branch a few minutes ago.
+
+          Install it from the game: **MODS > Import mod .zip**.
+
+          - commit \`${GITHUB_SHA}\`
+          - mod version \`${VERSION}\`
+          - leiasr_shim.dll: ${shim}
+
+          For a version somebody chose to ship, see the tagged releases.
+          EOF
+
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest \
+            --target "$GITHUB_SHA" \
+            --title "Latest build (${VERSION})" \
+            --prerelease \
+            --notes-file /tmp/notes.md \
+            "dist/${MOD_ID}-${VERSION}.zip" \
+            "dist/sha256sums.txt"
+
+          echo "Rolling release updated to $GITHUB_SHA"
+
       - name: Publish GitHub Release
+        if: env.VERSIONED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}

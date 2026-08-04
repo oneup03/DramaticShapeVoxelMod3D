@@ -83,6 +83,35 @@
   measures against. Fading it out of existence would blind the mod to the
   very thing it faded for.
 
+### Changed
+
+- **The release workflow builds on every branch and publishes a rolling
+  build.** It named `master` as its release branch and there has never been
+  a `master` in this repository -- the default is `dev` -- so the push
+  trigger had never once fired in its life, and every release to date came
+  from somebody running it by hand. The branch is read off the event now
+  rather than hardcoded, which cannot drift that way again.
+
+  What each push does:
+
+  - **any branch** -- packs the archive and builds the shim, and hands both
+    back as run artifacts. This is the only way to find out whether the
+    Windows half compiles before merging it, and the mod's one compiled
+    thing lives there.
+  - **the default branch** -- plus a rolling `latest` PRE-RELEASE, deleted
+    and recreated on every push (tag and all, so the source link never
+    points at last week's commit), so there is always exactly one URL
+    holding a current build.
+  - **a manual run** -- a real, versioned `vX.Y.Z` release, exactly as
+    before.
+
+  A rolling build ships `manifest.json`'s own version untouched: bumping a
+  version is a decision and pushing a commit is not. And the concurrency
+  group is per-ref and deliberately does NOT cancel in progress -- the usual
+  choice for a rolling build, and wrong here, because a run cancelled inside
+  the delete-and-recreate window leaves the repository with no `latest` at
+  all.
+
 ### Known
 
 - **3D costs a second scene pass, and that is the whole of what it costs.**
