@@ -9,7 +9,10 @@ name: Release
 #   the default branch    plus a ROLLING `latest` pre-release, replaced every
 #                         push, so there is always one URL holding a current
 #                         test build.
-#   workflow_dispatch     a real, versioned vX.Y.Z release (see Versioning).
+#   workflow_dispatch     on the default branch, a real versioned vX.Y.Z
+#                         release (see Versioning). On any other branch it
+#                         is a build and nothing more, which is how you test
+#                         this file without publishing anything.
 #
 # The rolling release is a PRE-RELEASE and deliberately: it is whatever was on
 # the branch twenty minutes ago, not something anybody chose to ship.
@@ -179,8 +182,13 @@ jobs:
       # a rolling test build: the default branch moved
       ROLLING: ${{ github.event_name == 'push'
                    && github.ref_name == github.event.repository.default_branch }}
-      # and a real release: somebody asked for one, by hand, on purpose
-      VERSIONED: ${{ github.event_name == 'workflow_dispatch' }}
+      # and a real release: somebody asked for one, by hand, on purpose, ON
+      # THE BRANCH RELEASES COME FROM. The branch test is not ceremony --
+      # without it, running this by hand from a feature branch to see whether
+      # it works publishes a versioned release of that branch, which is a
+      # surprising way to find out that it works.
+      VERSIONED: ${{ github.event_name == 'workflow_dispatch'
+                     && github.ref_name == github.event.repository.default_branch }}
 
     steps:
       - name: Checkout
