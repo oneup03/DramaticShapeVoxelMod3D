@@ -737,7 +737,11 @@ end
 -- what `packed` is for: laying a packed frame out a second time would pack
 -- an already-packed picture into half of itself.
 function Stereo3D.endFrame()
-  if not Stereo3D.enabled() then packed = false return end
+  if not Stereo3D.enabled() then
+    packed = false
+    LeiaSR.lens(false)
+    return
+  end
 
   if not packed then
     local shot, w, h = Stereo3D.capture()
@@ -761,7 +765,16 @@ function Stereo3D.endFrame()
   packed = false
   fresh = false
 
-  if Stereo3D.mode:get() == "leiasr" then LeiaSR.weave() end
+  -- ...and the lens follows the rung. On a panel whose lenticular layer is on
+  -- a switch, leaving it down after LEIA is switched off means an ordinary
+  -- desktop rendered soft and faintly doubled, with nothing on screen to
+  -- connect it back to a game setting. Both calls are cheap no-ops once the
+  -- lens is already where it is being asked to be.
+  if Stereo3D.mode:get() == "leiasr" then
+    LeiaSR.weave()
+  else
+    LeiaSR.lens(false)
+  end
 end
 
 -- The other end of it, from love.quit: hand the SR context back while the

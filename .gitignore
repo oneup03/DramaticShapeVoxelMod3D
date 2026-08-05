@@ -6,8 +6,13 @@ __pycache__/
 # agent worktrees and local scratch
 .claude/
 
-# the LeiaSR shim's build tree; the DLL that comes out of it is CI's to ship
+# the LeiaSR shim's build tree; the DLL that comes out of it is CI's to ship.
+# The staging path too: copying the DLL to assets/ is how you test a local
+# build against a live install, and it is exactly the sort of thing that ends
+# up committed by an absent-minded `git add -A`. The repository holds the
+# source; the archive holds the binary.
 leiasr_shim/build/
+assets/leiasr/
 
 # packed archives, whether CI made them or a local pack did
 dist/

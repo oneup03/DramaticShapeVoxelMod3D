@@ -66,6 +66,7 @@ void glReadBuffer(unsigned int mode);
 void glReadPixels(int x, int y, int w, int h, unsigned int format,
                   unsigned int type, void* pixels);
 void glFlush(void);
+void glViewport(int x, int y, int w, int h);
 typedef void (__stdcall *pfn_glBindFramebuffer)(unsigned int, unsigned int);
 typedef void (__stdcall *pfn_glGetFramebufferAttachmentParameteriv)(
     unsigned int, unsigned int, unsigned int, int*);
@@ -412,6 +413,23 @@ end
 function GLBridge.bindDefaultFramebuffer()
   if not ready then return false end
   return pcall(function() ext.glBindFramebuffer(GL.FRAMEBUFFER, 0) end)
+end
+
+-- Set the viewport explicitly, in physical pixels.
+--
+-- Only one caller needs this, and it needs it for a reason that is not
+-- obvious: a foreign renderer handed the default framebuffer draws into
+-- whatever viewport is currently set, and that viewport is the LAST thing
+-- anybody set -- not something the framebuffer binding restores. LOVE does
+-- set it back to the window on setCanvas(), so this is normally a no-op that
+-- writes the value already there. It is here so that the one place it matters
+-- does not depend on that continuing to be true: get it wrong and the weave
+-- lands at the size of the last canvas that was bound, which for the LeiaSR
+-- path is the double-width side-by-side, and the panel shows the left half of
+-- a picture stretched to twice its width.
+function GLBridge.viewport(w, h)
+  if not ready then return false end
+  return pcall(function() gl.glViewport(0, 0, w, h) end)
 end
 
 function GLBridge.flush()

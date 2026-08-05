@@ -170,6 +170,32 @@ return function(game)
           .. "the status says. If it is 3D but does not TRACK YOUR HEAD, the "
           .. "weaver came up in the wrong order -- see leiasr_shim.)")
     U.wait(300)
+
+    -- The switchable lens, on the panels that have one. False here is three
+    -- different things -- no shim, a shim built before the export, or a panel
+    -- whose lens does not move -- and only the first two are worth chasing.
+    print("[3d] leia lens: asked down=" .. tostring(LeiaSR.lens(true)))
+    U.wait(60)
+    print("[3d] leia lens: asked up=" .. tostring(LeiaSR.lens(false))
+          .. " (the desktop should be sharp 2D again; if it never was "
+          .. "lenticular, this panel has a fixed lens and false is correct)")
+    U.wait(60)
+
+    -- And the round trip, which is the interesting one: the weaver comes up
+    -- ONCE and every later selection of the rung short-circuits past it, so
+    -- anything hung off first-time setup is off by one trip out and back.
+    -- Leave LEIA, come back to it, and the picture must weave again with the
+    -- lens back down -- not side by side, and not autostereo through a lens
+    -- that stayed up.
+    Stereo3D.mode:sync("sbs")
+    U.wait(60)
+    print("[3d] leia round trip: away, ready=" .. tostring(LeiaSR.ready()))
+    Stereo3D.mode:sync("leiasr")
+    U.wait(60)
+    print("[3d] leia round trip: back, ready=" .. tostring(LeiaSR.ready())
+          .. " status=" .. LeiaSR.status()
+          .. " (this must be weaving again, lens and all)")
+    U.wait(300)
   end
 
   -- ------- what it cost

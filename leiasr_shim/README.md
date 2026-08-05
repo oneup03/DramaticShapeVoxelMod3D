@@ -6,11 +6,12 @@ compiled by MSVC, and LuaJIT's FFI calls C and only C. There is no mangled
 name, no vtable layout and no `this` adjustment the FFI could get right, and
 neither `extern "C"` nor a `.def` file papers over that at link time.
 
-So the mod's dependency is three flat C functions:
+So the mod's dependency is four flat C functions:
 
 ```c
 int  srk_init(void *hwnd);                    /* 1 = ready, 0 = unavailable */
 void srk_weave(unsigned tex, int w, int h);   /* w is the COMBINED width */
+int  srk_lens(int enable);                    /* switchable-lens preference */
 void srk_shutdown(void);
 ```
 
@@ -19,11 +20,24 @@ delay-load list, the structured-exception guards — stays on this side of that
 boundary. [`lib/LeiaSR.lua`](../lib/LeiaSR.lua) is the whole of the other
 side.
 
+`srk_lens` is newer than the other three, and the Lua side treats a shim
+without it as a shim that cannot express the preference — which is also how a
+panel with a fixed lens behaves. So an old DLL beside a new mod degrades
+rather than breaking.
+
 ## Building it
 
 The SR SDK is vendored through **bo3b/SR-lib**, which is a *private*
 repository — you need read access on your GitHub account, and CI needs a PAT
 (see the `shim` job in [`../.github/workflows/release.yml`](../.github/workflows/release.yml)).
+
+The submodule tracks its **`api_expansion`** branch, which is where SR-lib's
+CMake package lives. `CMakeLists.txt` here is three meaningful lines —
+`add_subdirectory`, link `SRLib::SR`, `srlib_apply_delayload` — because the
+package owns the SDK paths, the import libraries and the delay-load list.
+Those used to be written out by hand here, and the hand-written version is now
+known not to build the current SR.cpp at all (it predates
+`SimulatedRealityFaceTrackers`).
 
 ```sh
 git submodule update --init libs/SR-lib
@@ -64,13 +78,33 @@ dumpbin /imports leiasr_shim.dll | findstr ".dll"
 Every SR, Dimenco and OpenCV DLL must appear **only** under *"Section contains
 the following delay load imports"*. Anything in the ordinary import section is
 a hard dependency and will stop the DLL loading on a machine without the SR
-runtime — which is most machines.
+runtime — which is most machines. A current build reads:
 
 ```
-dumpbin /dependents leiasr_shim.dll
+Section contains the following imports:
+    OPENGL32.dll
+    KERNEL32.dll
+
+Section contains the following delay load imports:
+    SimulatedRealityCore.dll
+    SimulatedRealityFaceTrackers.dll
+    SimulatedRealityDisplays.dll
+    SimulatedRealityOpenGL.dll
 ```
 
-should show nothing but `KERNEL32.dll`, `OPENGL32.dll` and the delay-loaded
-set. `/MT` is what keeps `VCRUNTIME140.dll` out of that list: the host ships
-no MSVC runtime, so a `/MD` build would silently cost LeiaSR support on every
-machine without the Visual C++ redistributable.
+Two DLLs are on the delay-load *list* without appearing here, and that is
+correct rather than a gap: `srlib_apply_delayload` names the complete SR set
+rather than tailoring it per consumer, and `/DELAYLOAD` on a DLL you do not
+import is a no-op. (`/ignore:4199` is what stops the linker warning about each
+one and training everybody to skim link warnings.)
+
+Two exports left of KERNEL32 is also the `/MT` check: the host ships no MSVC
+runtime, so a `/MD` build would put `VCRUNTIME140.dll` in that top section and
+silently cost LeiaSR support on every machine without the Visual C++
+redistributable.
+
+```
+dumpbin /exports leiasr_shim.dll
+```
+
+should list exactly `srk_init`, `srk_lens`, `srk_shutdown` and `srk_weave`.

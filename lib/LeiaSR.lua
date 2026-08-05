@@ -13,12 +13,18 @@
 -- The weaver is a C++ class with virtual inheritance, compiled by MSVC.
 -- LuaJIT's FFI can call C, and only C: there is no name, no vtable layout
 -- and no `this` adjustment it could get right. So the mod ships a shim --
--- three flat C functions over the SR SDK, built by MSVC in this repository's
+-- four flat C functions over the SR SDK, built by MSVC in this repository's
 -- own CI (see leiasr_shim/):
 --
 --   int  srk_init(void *hwnd)             1 ready, 0 unavailable
 --   void srk_weave(unsigned tex, int w, int h)
+--   int  srk_lens(int enable)             the switchable lens, if there is one
 --   void srk_shutdown(void)
+--
+-- srk_lens arrived after the other three, and an older shim next to a newer
+-- mod is a thing that happens, so every call to it is guarded: a shim that
+-- does not export it is a shim that cannot express the preference, which is
+-- exactly how a panel with no switchable lens behaves anyway.
 --
 -- Everything version-specific, every delay-load, and the whole SR SDK stay
 -- behind that boundary. This file's dependency is one DLL that may or may
@@ -67,6 +73,7 @@ local shim = nil            -- the loaded DLL, or false once it has failed
 local tried = false         -- srk_init has been attempted (success or not)
 local live = false          -- ...and reported a weaver
 local strikes = 0           -- consecutive weave failures; two and it is over
+local lensOn = false        -- what we last asked the switchable lens to do
 local status = "not started"
 local wide = nil            -- the 2W x H side-by-side the weaver reads
 local wideW, wideH = 0, 0
@@ -78,6 +85,7 @@ local wideParams = { mode = 0, swap = false, parity = false, flip = true }
 local CDEF = [[
 int  srk_init(void *hwnd);
 void srk_weave(unsigned int tex, int width, int height);
+int  srk_lens(int enable);
 void srk_shutdown(void);
 ]]
 
@@ -177,6 +185,37 @@ local function bringUp()
   return true
 end
 
+-- ------- the switchable lens
+--
+-- Some SR panels put the lenticular layer on a switch: lens down and it is an
+-- autostereoscopic display, lens up and it is an ordinary sharp 2D monitor.
+-- The hint is a PREFERENCE and the SR service arbitrates it across every
+-- application that has an opinion, so this is asking rather than setting, and
+-- the honest answer to "did it work" is often "somebody else still wants it
+-- on".
+--
+-- Worth wiring even so, because the failure it prevents is one the player
+-- cannot diagnose: leave the lens down after the 3D row is switched off, or
+-- after the game exits, and the whole desktop is soft and faintly doubled
+-- with nothing on screen to connect it to.
+--
+-- Guarded twice over. The shim may predate the export (an older
+-- leiasr_shim.dll beside a newer mod), in which case indexing the symbol is
+-- itself the error, and the SDK answers E_NOINTERFACE on a panel whose lens
+-- does not move -- which is not a failure, just a panel with one lens state.
+function LeiaSR.lens(on)
+  on = on and true or false
+  if not (shim and live) then
+    lensOn = false
+    return false
+  end
+  if on == lensOn then return true end
+  local ok, rc = pcall(function() return shim.srk_lens(on and 1 or 0) end)
+  if not ok then return false end
+  lensOn = on
+  return rc ~= 0
+end
+
 -- The DPI trap, which nothing on this side can fix and must therefore say
 -- out loud.
 --
@@ -219,6 +258,8 @@ function LeiaSR.status()
 end
 
 function LeiaSR.disable(why)
+  -- lens first: once `live` is false there is nothing left to ask with
+  LeiaSR.lens(false)
   live = false
   status = why or "the weaver stopped -- side by side instead"
 end
@@ -288,6 +329,14 @@ function LeiaSR.weave()
   if not wide then return end
   if strikes >= 2 then return end
   if not bringUp() then return end
+
+  -- Here rather than in bringUp, and the difference is one the player can
+  -- reach: bringUp runs ONCE and then short-circuits forever, so a lens
+  -- lowered there would stay up after the first trip out to another mode and
+  -- back. Asked for on every weave instead, which is an early return on all
+  -- but the first frame after the rung is selected.
+  LeiaSR.lens(true)
+
   local t0 = Perf.now()
 
   -- LOVE's own state first, so the binding the weaver inherits is the one
@@ -314,6 +363,17 @@ function LeiaSR.weave()
   -- library reads the texture it was drawing into
   GLBridge.flush()
   GLBridge.bindDefaultFramebuffer()
+
+  -- Binding the window does NOT restore the window's viewport -- the viewport
+  -- is whatever was last set, and the last thing set here was a canvas twice
+  -- the width of the screen. LOVE's setCanvas() above does put it back, so
+  -- this is normally writing a value that is already there; it is written
+  -- anyway because the symptom of getting it wrong is the same symptom as
+  -- feeding the weaver a half-width side-by-side (a picture at double width
+  -- with only the left eye on screen), and two causes behind one symptom is
+  -- how an afternoon disappears.
+  local okDims, dw, dh = pcall(love.graphics.getPixelDimensions)
+  if okDims and dw then GLBridge.viewport(dw, dh) end
 
   local ok = pcall(function() shim.srk_weave(tex, wideW, wideH) end)
 
@@ -345,8 +405,12 @@ end
 -- keyed to that context, and dropping it out from under them is a crash on
 -- the NEXT launch rather than this one, which is a miserable thing to debug.
 function LeiaSR.shutdown()
-  if shim and live then pcall(function() shim.srk_shutdown() end) end
+  if shim and live then
+    LeiaSR.lens(false)
+    pcall(function() shim.srk_shutdown() end)
+  end
   live = false
+  lensOn = false
 end
 
 function LeiaSR.invalidate()

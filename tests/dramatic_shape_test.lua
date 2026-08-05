@@ -4516,6 +4516,21 @@ T.eq(labels.LEIA, LeiaSR.platformOK() or nil,
 T.eq(type(LeiaSR.platformOK), "function", "the platform gate exists")
 T.eq(LeiaSR.ready(), false, "no shim, no runtime, no weave -- and no crash")
 
+-- The switchable lens, which is asked for rather than set: the SR service
+-- arbitrates it across every application with an opinion. Two ways it can be
+-- unavailable and both have to answer rather than throw -- no shim at all
+-- (here), and a shim built before the export existed, which is an ordinary
+-- thing to have on disk next to a newer mod.
+T.eq(type(LeiaSR.lens), "function", "the lens preference is expressible")
+T.eq(LeiaSR.lens(true), false, "and cannot be granted with no weaver up")
+T.eq(LeiaSR.lens(false), false, "in either direction")
+T.eq(LeiaSR.ready(), false, "and asking did not bring anything up")
+
+-- endFrame raises the lens on every frame the LEIA rung is not selected, so
+-- the path that does it has to be free of a shim, of a weaver and of a window
+T.eq(pcall(S3D.endFrame), true,
+  "and the frame ends cleanly on a machine with none of it")
+
 -- the knobs, and the defaults they ship at
 T.eq(S3D.depth:get(), 1, "3D DEPTH ships at the full budget")
 T.eq(S3D.focus:get(), 1, "3D FOCUS ships on the camera's own subject")

@@ -85,6 +85,48 @@
 
 ### Changed
 
+- **The LeiaSR shim is built through SR-lib's own CMake package** rather than
+  through a hand-written copy of its dependency list. The submodule follows
+  `api_expansion`, where that package lives, and `leiasr_shim/CMakeLists.txt`
+  is now three meaningful lines: `add_subdirectory`, link `SRLib::SR`, and
+  `srlib_apply_delayload`, which owns the delay-load list.
+
+  Not a tidying. The hand-written list no longer builds SR-lib at all -- it
+  predates `SimulatedRealityFaceTrackers`, and the link fails with seven
+  unresolved externals across `HeadTracker`, `HeadPoseTracker`, `EyeTracker`
+  and their streams. A dependency list maintained by the consumer goes stale
+  the first time the dependency grows, and it takes the LEIA rung with it.
+
+  It had also been carrying a wrong belief -- that the x64 SDK ships OpenCV
+  only as modular libraries and has no `opencv_world343`. It has one, and the
+  SR runtime installs `opencv_world343.dll` and nothing else from OpenCV, so
+  that was the only name that could ever have resolved. Checked with
+  `dumpbin` before and after: this shim imports no OpenCV symbol either way,
+  so nothing was broken -- the wrong name was simply sitting there being
+  wrong.
+
+- **The switchable lens goes back up when the 3D row does.** Some SR panels
+  put the lenticular layer on a switch, and a panel left switched to
+  autostereo after the game stops weaving is an ordinary desktop rendered
+  soft and faintly doubled, with nothing on screen connecting it to a setting
+  the player changed. The shim gained a fourth entry point for it and the
+  end-of-frame pass follows the rung: lens down while LEIA is selected, up on
+  every other mode, on shutdown, and when the weaver gives up mid-session.
+
+  It is a preference rather than a command -- the SR service arbitrates it
+  across every application with an opinion -- so "no" is a normal answer and
+  means one of three things: no shim, a shim built before the export existed,
+  or a panel whose lens does not move. Only the first two are worth chasing,
+  and `tests/stereo_probe.lua` prints which.
+
+- **The weaver's source texture is bound once rather than every frame**, and
+  the viewport is asserted before the weave rather than assumed. Rebinding
+  the weaver's input reinitialises internal state on some runtime versions,
+  and the side-by-side canvas it reads is a stable object that changes only
+  on a resize or a mode switch. The viewport is belt and braces: binding the
+  window does not restore the window's viewport, and the symptom of getting
+  it wrong is the same symptom as feeding the weaver a half-width pair.
+
 - **The release workflow builds on every branch and publishes a rolling
   build.** It named `master` as its release branch and there has never been
   a `master` in this repository -- the default is `dev` -- so the push

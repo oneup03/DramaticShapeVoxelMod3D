@@ -1,4 +1,8 @@
 [submodule "libs/SR-lib"]
 	path = libs/SR-lib
 	url = https://github.com/bo3b/SR-lib.git
-	branch = master
+	# api_expansion, not master: it is where SR-lib's CMake package lives
+	# (SRLib::SR + srlib_apply_delayload), and leiasr_shim/CMakeLists.txt is
+	# written against it rather than hand-rolling the SDK paths and the
+	# delay-load list. It is a fast-forward of master, so nothing is lost.
+	branch = api_expansion

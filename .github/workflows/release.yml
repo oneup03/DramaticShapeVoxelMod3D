@@ -193,6 +193,22 @@ jobs:
           }
           Write-Host "no hard SR imports"
 
+          # And that the C surface the mod actually calls is all there. This
+          # is not paranoia about the compiler: the exports are the ENTIRE
+          # contract between an MSVC DLL and a LuaJIT mod that share no build,
+          # no headers and no release, and a shim missing one of them fails at
+          # the point of use -- silently, as "LeiaSR unavailable", on somebody
+          # else's machine. Adding an export means adding it here too, which
+          # is the point.
+          $exports = (& $dumpbin /exports $dll) -join "`n"
+          $missing = @('srk_init','srk_weave','srk_lens','srk_shutdown') |
+                     Where-Object { $exports -notmatch "\b$_\b" }
+          if ($missing) {
+            Write-Error "leiasr_shim.dll is missing exports: $($missing -join ', ')"
+            exit 1
+          }
+          Write-Host "all four srk_* exports present"
+
       - uses: actions/upload-artifact@v4
         if: steps.srlib.outputs.available == 'true'
         with:
