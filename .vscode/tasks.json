@@ -1,0 +1,55 @@
+{
+  // Ctrl+Shift+B runs "Pack mod .zip". The archive lands in dist/ and is
+  // installed from the game with MODS > Import mod .zip.
+  //
+  // Everything here shells out to tools/pack.py rather than inlining a
+  // command, so a local build and a CI build cannot drift into packing
+  // different archives -- the script is the one description of what a
+  // package is, and it explains itself at the top.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Pack mod .zip",
+      "detail": "Working tree -> dist/. What you want while testing an edit.",
+      "type": "process",
+      "command": "python",
+      "args": ["tools/pack.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "Pack mod .zip (from HEAD)",
+      "detail": "Committed state -> dist/. Reproduces what CI would ship.",
+      "type": "process",
+      "command": "python",
+      "args": ["tools/pack.py", "--head"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      // Optional, and Windows-only: the mod runs without it and the LEIA rung
+      // simply is not on the ladder. Run it once and "Pack mod .zip" finds the
+      // DLL on its own from then on.
+      "label": "Build LeiaSR shim",
+      "detail": "MSVC + the SR-lib submodule. Needed only for the LEIA mode.",
+      "type": "shell",
+      "command": "cmake -S leiasr_shim -B leiasr_shim/build -A x64; if ($?) { cmake --build leiasr_shim/build --config Release }",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": "$msCompile",
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    }
+  ]
+}

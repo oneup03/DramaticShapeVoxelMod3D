@@ -361,7 +361,7 @@ jobs:
 
           git archive HEAD | tar -x -C "$staging"
 
-          rm -rf "$staging/.github" "$staging/.gitattributes" \
+          rm -rf "$staging/.github" "$staging/.vscode" "$staging/.gitattributes" \
                  "$staging/.gitignore" "$staging/.luarc.json"
 
           # The shim's SOURCE stays in the repository and out of the archive:
